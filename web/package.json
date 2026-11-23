@@ -1,0 +1,35 @@
+{
+  "name": "ps5-remote-web",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --watch server/index.ts & vite",
+    "build": "vite build",
+    "start": "NODE_ENV=production node server/index.ts",
+    "test": "node --test 'server/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "admin:create": "node server/cli.ts admin:create",
+    "user:reset-password": "node server/cli.ts user:reset-password"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.11",
+    "hono": "4.13.20"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.5",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "motion": "14.14.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwindcss": "4.3.5",
+    "typescript": "7.0.2",
+    "vite": "8.3.8"
+  }
+}
