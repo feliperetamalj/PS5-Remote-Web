@@ -26,7 +26,22 @@ Solo `web/` habla con `media/`, por un socket unix `0600`. La web se publica por
 - `media/` hereda la licencia **AGPL-3.0** de chiaki-ng. El repo se licencia AGPL-3.0 y la página enlaza al código.
 - La pila WebRTC se confirma en ADR-001, después del spike de la Fase 1.
 
-## ADR-001: Pila WebRTC del servidor (pendiente de Fase 1)
+## Resultados del spike de la Fase 1 (2026-11-22)
+
+`media dump` contra la PS5 real (chiaki-ng v1.10.1, cable, este Mac), 10 s en la pantalla de ajustes:
+
+| Qué | Resultado |
+|---|---|
+| Video | H.264 perfil **Main**, nivel 5.0, 1920x1080, yuv420p, sin cuadros B, 61,4 cuadros por segundo |
+| Orden de entrega | 1.ª llamada: SPS/PPS solo. 2.ª: IDR. Después cuadros P. Hay que anteponer el SPS/PPS guardado a cada IDR |
+| Pérdidas en LAN | 0 cuadros perdidos, 0 recuperados |
+| Audio | **Opus crudo**, 2 canales, 48 kHz, 480 muestras por paquete (10 ms), unos 66 kbps |
+| Mando | X apretada 100 ms por `chiaki_session_set_controller_state`: la consola abrió el diálogo esperado |
+| Archivo | `ffmpeg` lo decodifica completo sin errores |
+
+Pendiente para la Fase 2: el bitrate medido (1,4 Mbps) es de una pantalla casi estática; hay que medirlo en juego. Y confirmar que Chrome acepta perfil Main nivel 5.0 por WebRTC (`profile-level-id`).
+
+## ADR-001: Pila WebRTC del servidor (pendiente de Fase 2)
 ## ADR-002: Passthrough H.264 vs recompresión (pendiente de Fase 2)
 
 ## ADR-003: Modo espectador
