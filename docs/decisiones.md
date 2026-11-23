@@ -29,14 +29,14 @@ Solo `web/` habla con `media/`, por un socket unix `0600`. La web se publica por
 ## ADR-001: Pila WebRTC del servidor (pendiente de Fase 1)
 ## ADR-002: Passthrough H.264 vs recompresión (pendiente de Fase 2)
 
-## ADR-003: Modo espectador (propuesto)
+## ADR-003: Modo espectador
 
-**Estado:** Propuesta · **Fecha:** 2026-11-22 · **Decide:** Felipe
+**Estado:** Aceptada · **Fecha:** 2026-11-22 · **Decide:** Felipe
 
 ### Contexto
 Felipe quiere que los demás amigos puedan ver en vivo la partida de quien está jugando.
 
-### Decisión propuesta
+### Decisión
 `media/` reenvía los mismos paquetes H.264 y Opus a peers adicionales de solo recepción. Un espectador no tiene DataChannel `pad`, así que no puede mandar ningún input. `web/` expone `POST /api/watch/offer` solo a cuentas aprobadas y con un tope de espectadores.
 
 ### Consecuencias

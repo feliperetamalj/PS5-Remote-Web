@@ -5,6 +5,7 @@ Juega la PS5 de Felipe desde Chrome, con tu propio mando (PS4, PS5 o Xbox). Uso 
 - Arquitectura y decisiones: [`docs/decisiones.md`](docs/decisiones.md)
 - Seguridad: [`docs/seguridad.md`](docs/seguridad.md)
 - Latencias medidas: [`docs/mediciones.md`](docs/mediciones.md)
+- Roadmap y estado: [`docs/roadmap.md`](docs/roadmap.md)
 
 ```
 PS5 ──Remote Play (LAN)──► media/ (C++: libchiaki + libdatachannel) ──WebRTC UDP──► Chrome
