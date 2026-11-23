@@ -99,35 +99,52 @@ cd ~/ps5-remote-web/web
 PS5_CONFIG=~/.config/ps5-stream/config.json npm run admin:create -- <correo-de-felipe> "Felipe"
 ```
 
-### 7. Túnel de playit.gg
+### 7. Túnel de playit.gg y Caddy local
 
-Felipe ya creó en playit.gg un túnel de tipo **HTTPS** con el dominio `ps5remote.felipardo.cl`. A OpenClaw le toca dejarlo apuntando al servicio:
+Felipe ya creó en playit.gg el túnel web con el dominio `ps5remote.felipardo.cl` (tunnel_id 5167769).
 
-- Destino local del túnel: `127.0.0.1`, puerto `8080`. Es el único puerto que se publica.
-- El túnel termina el HTTPS; `web` sigue hablando HTTP solo en `127.0.0.1`. No instalar certificados ni proxies en el Mac.
-- **No** crear un túnel para el puerto UDP 50000 ni para ningún otro: el video va directo por la red, nunca por playit.
-- No modificar los túneles que ya existan (por ejemplo, el de Minecraft).
-- `public_origin` en `config.json` debe ser exactamente `https://ps5remote.felipardo.cl`. Si no coincide, la página carga pero todo intento de entrar responde "Origen no permitido".
+**Corrección (2026-11-23):** este túnel **no termina el HTTPS**. Pasa TCP crudo: el puerto 80 público va a un puerto local y el 443 público a otro, igual que el túnel de Wii Sports. Por eso hace falta un Caddy local que saque el certificado y hable HTTPS. La versión anterior de este paso ("no instalar certificados ni proxies") estaba equivocada para este Mac.
+
+| Público | Destino local | Quién escucha |
+|---|---|---|
+| `ps5remote.felipardo.cl:80` | `127.0.0.1:8462` | Caddy (redirige a HTTPS y responde el desafío de Let's Encrypt) |
+| `ps5remote.felipardo.cl:443` | `127.0.0.1:8461` | Caddy (HTTPS) → `reverse_proxy 127.0.0.1:8091` |
+
+- No se usan los puertos 80 y 443 locales: el 443 lo ocupa Tailscale. El 8451 es de otro Caddy y el 8452 de Tailscale; no reutilizarlos.
+- Caddy va **fuera del repo**: configuración en `~/.config/ps5-stream/caddy/Caddyfile` (certificados en `~/.config/ps5-stream/caddy/data`), binario `~/Apps/disco/bin/caddy`, LaunchAgent `~/Library/LaunchAgents/cl.ps5remote.caddy.plist` y logs en `~/Library/Logs/ps5-stream/caddy*.log`.
+- **Orden:** primero se cambian en el panel de playit los dos destinos locales (HTTP → 8462, HTTPS → 8461) y recién después se arranca Caddy. Si Caddy parte antes, falla el desafío y gasta intentos de Let's Encrypt.
+  ```bash
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/cl.ps5remote.caddy.plist
+  ```
+- `web` sigue hablando HTTP solo en `127.0.0.1:8091`. `public_origin` en `config.json` debe ser exactamente `https://ps5remote.felipardo.cl`; si no coincide, la página carga pero todo intento de entrar responde "Origen no permitido".
+- No modificar los túneles que ya existan (Minecraft, Wii Sports y el resto).
 
 Comprobación: `curl -sI https://ps5remote.felipardo.cl/api/health` responde `200` y trae la cabecera `content-security-policy`.
 
-Desde que este paso funciona, la página de acceso queda visible en internet. Jugar desde fuera de la casa todavía no funciona (falta abrir el UDP, etapa 2), pero las cuentas y el panel sí son alcanzables: por eso el paso 6 (admin con contraseña fuerte) va antes.
+**Estado al 2026-11-23 00:15:** Caddyfile y LaunchAgent creados, Caddy **detenido**. El túnel todavía apunta a `127.0.0.1:443` (playit registra timeouts); falta el cambio en el panel.
+
+**Pendiente:** como el túnel es TCP crudo, Caddy ve llegar las conexiones desde el agente de playit y no desde el visitante. Falta verificar si playit puede entregar la IP real (por ejemplo con PROXY protocol); mientras tanto los límites de intentos de login no distinguen por IP.
+
+Desde que este paso funciona, la página de acceso queda visible en internet: el paso 6 (admin con contraseña fuerte) va antes.
 
 ### 8. Video desde fuera de la casa (etapa 2, solo cuando Felipe lo pida)
 
-La conexión de Felipe tiene indicios de CGNAT, así que el video de quienes juegan desde fuera entra por un **túnel UDP de playit.gg** (hay nodo en Chile; el túnel HTTPS medía 6 ms desde la casa).
+La conexión de Felipe tiene indicios de CGNAT, así que el video de quienes juegan desde fuera entra por un **túnel UDP de playit.gg** (hay nodo en Chile; el túnel web medía 6 ms desde la casa).
 
-1. En playit, crear un túnel **UDP** con destino local `127.0.0.1`, puerto `50000`.
-2. Anotar la dirección y el puerto públicos que playit le asigna.
-3. Reinstalar los servicios con esa dirección:
+1. Túnel UDP "PS5 Remote Web UDP", ya creado por Felipe: dirección pública **`wap-autumn.tun.ply.gg:1887`**.
+2. Su destino local debe ser `127.0.0.1`, puerto **`50000`**. Playit lo creó apuntando a `24642`: hay que cambiarlo en el panel, porque `media` escucha en el 50000.
+3. Reinstalar los servicios con la dirección pública:
    ```bash
-   sudo ~/ps5-remote-web/deploy/install-services.sh ps5stream <host-publico>:<puerto>
+   sudo ~/ps5-remote-web/deploy/install-services.sh elepew wap-autumn.tun.ply.gg:1887
    ```
+   Los servicios están instalados como LaunchDaemons, así que este paso pide `sudo` (Felipe). Usar `install-agents.sh` aquí dejaría dos copias de cada servicio peleando por los mismos puertos.
 4. `tail ~/Library/Logs/ps5-stream/media.log` debe decir `público <ip>:<puerto>`.
 
 En ese modo el servidor anuncia solo la dirección del túnel y deja de compartir las IP locales del Mac. Los que juegan dentro de la casa también pasan por el túnel.
 
-Antes de este paso, Felipe tiene que haber cambiado el registro de Remote Play a la cuenta PSN de invitados (ver `docs/seguridad.md`).
+El registro de Remote Play ya está hecho con la cuenta PSN de invitados (`felipardo777web`, 2026-11-22), así que ese requisito de `docs/seguridad.md` está cumplido. No hace falta otro PIN.
+
+**Permiso de Red local de macOS:** `media` necesita llegar a la PS5 por la red de la casa. Lanzado por launchd y sin firma, macOS se lo niega sin avisar (`No route to host`). `media/build.sh` firma el binario con el identificador `cl.felipardo.ps5stream.media`; la primera vez hay que aceptar en pantalla "¿Permitir que … busque dispositivos en las redes locales?". Si tras recompilar vuelve el error, revisar Ajustes del Sistema → Privacidad y seguridad → Red local.
 
 ### 9. Verificar
 
