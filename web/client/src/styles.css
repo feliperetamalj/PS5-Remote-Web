@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+/* Tokens. Estética: oscura y sobria, un solo acento (el azul de la luz del DualSense), fuente del sistema. */
+@theme {
+  --color-bg: #0b0d12;
+  --color-surface: #141821;
+  --color-raised: #1c2230;
+  --color-line: #2a3142;
+  --color-fg: #e8ebf2;
+  --color-muted: #9aa3b5;
+  --color-accent: #4f8cff;
+  --color-on-accent: #06101f;
+  --color-ok: #3ecf8e;
+  --color-warn: #f5b84a;
+  --color-danger: #ff6b6b;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html { background: var(--color-bg); color: var(--color-fg); font: 100%/1.5 var(--font-sans); }
+body { min-height: 100dvh; }
+h1, h2 { letter-spacing: -0.02em; line-height: 1.15; }
+.num { font-variant-numeric: tabular-nums; }
+
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 6px; }
+
+/* La respuesta va en la pulsación, no al soltar. */
+.press { transition: transform 100ms ease-out, background-color 150ms, border-color 150ms, opacity 150ms; cursor: pointer; }
+.press:active:not(:disabled) { transform: scale(0.97); }
+.press:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Barra superior translúcida: el contenido pasa por debajo. */
+.glass {
+  background: color-mix(in srgb, var(--color-bg) 70%, transparent);
+  backdrop-filter: blur(20px) saturate(160%);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-line) 60%, transparent);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass { background: var(--color-bg); backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  :root { --color-line: #6b7690; --color-muted: #c5ccda; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .press:active:not(:disabled) { transform: none; }
+}

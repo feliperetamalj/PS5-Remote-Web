@@ -12,3 +12,4 @@ build/
 *.h264
 *.log
 .DS_Store
+.claude/
