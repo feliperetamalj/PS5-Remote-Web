@@ -7,6 +7,11 @@ import type { Media } from './media.ts'
 import * as auth from './auth.ts'
 import * as turns from './turn.ts'
 import { HOUR, RuleError } from './turn.ts'
+import { randomBytes } from 'node:crypto'
+
+// Prueba de conexión: 16 MB de bytes al azar (no se comprimen), en trozos de 64 KB.
+const SPEED_CHUNK = randomBytes(64 * 1024)
+const SPEED_BYTES = 16 * 1024 * 1024
 
 type Env = { Variables: { user: auth.User } }
 type Live = { session_id: number; user_id: number; booking_id: number }
@@ -32,6 +37,7 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
   let stopPending = false // un stop que falló se reintenta en cada barrido
   let offerLock: Promise<unknown> = Promise.resolve() // una sola conexión armándose a la vez
   const watchLimit = auth.rateLimiter(20, 5 * 60_000)
+  const speedLimit = auth.rateLimiter(6, 10 * 60_000)
   const watchOwner = new Map<number, number>() // id de conexión de espectador → usuario que la pidió
 
   const q = <T>(sql: string, ...a: (string | number | null)[]) => db.prepare(sql).all(...a) as T[]
@@ -328,6 +334,26 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
     try { await media({ op: 'watch_answer', id: watchId, sdp }) }
     catch (e) { throw new HttpError(503, (e as Error).message) }
     return c.json({ ok: true })
+  })
+
+  // ── Prueba de conexión ─────────────────────────────────────────────────────
+  // Mide contra este mismo servidor: el ping es el viaje de una petición chica y la descarga, 16 MB.
+  api.get('/speedtest/ping', (c) => { needUser(c); return c.json({ t: now() }) })
+
+  api.get('/speedtest/down', (c) => {
+    const user = needApproved(c)
+    // La descarga usa la misma salida a internet que el video: mientras alguien juega no se corre.
+    if (live) throw new HttpError(409, 'Hay una partida en curso. La prueba de velocidad se puede hacer cuando termine.')
+    if (!speedLimit(String(user.id), now())) throw new HttpError(429, 'Demasiadas pruebas seguidas. Espera unos minutos.')
+    let sent = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(ctrl) {
+        if (sent >= SPEED_BYTES) return ctrl.close()
+        ctrl.enqueue(SPEED_CHUNK)
+        sent += SPEED_CHUNK.length
+      },
+    })
+    return c.body(stream, 200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(SPEED_BYTES), 'Content-Encoding': 'identity' })
   })
 
   // ── Admin ──────────────────────────────────────────────────────────────────

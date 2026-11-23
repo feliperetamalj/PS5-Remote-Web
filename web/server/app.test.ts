@@ -35,7 +35,10 @@ function client(app: ReturnType<typeof createApp>['app']) {
     })
     const set = res.headers.get('set-cookie')
     if (set) cookie = set.split(';')[0]
-    return { status: res.status, body: (await res.json()) as any }
+    const raw = Buffer.from(await res.arrayBuffer())
+    let parsed: any = null
+    try { parsed = JSON.parse(raw.toString()) } catch { /* respuesta binaria */ }
+    return { status: res.status, body: parsed, bytes: raw.length }
   }
 }
 
@@ -147,6 +150,11 @@ test('API: registro pendiente, aprobación, juego y corte al vencer', async () =
   assert.equal((await felipe('POST', `/admin/bookings/${booking.id}`, { status: 'confirmed' })).status, 200)
   const cal = (await ana('GET', '/calendar')).body
   assert.equal(cal.days[0].slots.find((s: any) => s.start_at === slot).mine.status, 'confirmed')
+  // Prueba de conexión: el ping es para cualquier cuenta; la descarga, solo aprobadas y sin partida en curso.
+  assert.equal((await client(app)('GET', '/speedtest/ping')).status, 401)
+  assert.equal((await ana('GET', '/speedtest/ping')).status, 200)
+  const down = await ana('GET', '/speedtest/down')
+  assert.deepEqual([down.status, down.bytes], [200, 16 * 1024 * 1024])
   // El calendario muestra quién reservó, y la fila muestra a todos; una cuenta pendiente no ve nombres.
   assert.equal((await felipe('GET', '/calendar')).body.days[0].slots.find((s: any) => s.start_at === slot).by, 'Ana')
   const caro = client(app)
@@ -174,6 +182,8 @@ test('API: registro pendiente, aprobación, juego y corte al vencer', async () =
   const beto = client(app)
   assert.equal((await beto('POST', '/signup', { email: 'beto@x.cl', name: 'Beto', password: 'clave-larga-2' })).status, 200)
   assert.equal((await beto('POST', '/watch/offer', {})).status, 403) // pendiente no mira
+  assert.equal((await beto('GET', '/speedtest/down')).status, 403)
+  assert.equal((await felipe('GET', '/speedtest/down')).status, 409) // no se le quita ancho de banda a quien juega
   assert.equal((await ana('POST', '/watch/offer', {})).status, 409) // la que juega no se mira a sí misma
   assert.deepEqual([(await felipe('GET', '/state')).body.live, (await felipe('GET', '/state')).body.watching], [true, 1])
   const watch = await felipe('POST', '/watch/offer', {})

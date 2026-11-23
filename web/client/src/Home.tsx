@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 import type { AppState } from './main.tsx'
 import { Countdown, GlowLink, Trail } from './kit.tsx'
 import { Spotlight } from './motion/spotlight.tsx'
+import { SpeedTest } from './SpeedTest.tsx'
 import { api, usePoll, useNow, fmtDay, fmtLeft, ActionButton, Badge, Card, Empty } from './ui.tsx'
 
 type Slot = { start_at: number; hour: number; taken: boolean; by: string | null; waiting: number; waiting_names: string[]; mine: { id: number; status: 'requested' | 'confirmed'; position: number } | null }
@@ -109,6 +110,8 @@ export function Home({ state, reload }: { state: AppState; reload: () => void })
               </ol>
             )}
           </Card>
+
+          <SpeedTest approved={approved} />
 
           <Card title="Antes de jugar">
             <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
