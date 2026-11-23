@@ -20,10 +20,20 @@ PS5 ──Remote Play (LAN)──► media/ (C++: libchiaki + libdatachannel) �
 | Node 24+ | `brew install node` | Servidor web y build del frontend |
 | Paquetes npm | `cd web && npm ci` | Ver `web/package.json` |
 
-| Para compilar `media/` | `brew install cmake pkg-config opus openssl@3 json-c miniupnpc libevent python` | libchiaki y libdatachannel |
+| Para compilar `media/` | `brew install cmake pkg-config protobuf curl opus json-c miniupnpc libevent` | libchiaki (el script instala además `grpcio-tools` y `protobuf` de Python en `media/build/pydeps`) |
 | Para probar | `brew install ffmpeg gh` | `ffplay` para ver el `.h264`; `gh` para GitHub |
 
 Diseño: estilo "cosmic" (catálogo design-styles), componentes copiados de [motion-primitives](https://github.com/ibelick/motion-primitives) en `web/client/src/motion/`, Chart.js en el panel y la fuente Audiowide servida desde el propio sitio.
+
+## Streaming (`media/`)
+
+```bash
+git submodule update --init --recursive media/third_party/chiaki-ng
+media/build.sh
+media/build/out/media discover 192.168.100.44   # estado de la PS5
+```
+
+chiaki-ng está fijado en la versión v1.10.1. Los ajustes que hicieron falta para compilar en macOS 26 están comentados en `media/build.sh`.
 
 ## Desarrollo
 

@@ -1,0 +1,3 @@
+[submodule "media/third_party/chiaki-ng"]
+	path = media/third_party/chiaki-ng
+	url = https://github.com/chiaki-ng/chiaki-ng.git
