@@ -4,6 +4,8 @@ import { connect } from 'node:net'
 export type MediaRequest =
   | { op: 'start'; expires_at: number } // responde con la oferta SDP del servidor
   | { op: 'answer'; sdp: string }
+  | { op: 'watch' } // espectador: responde con una oferta SDP y el id de su conexión
+  | { op: 'watch_answer'; id: number; sdp: string }
   | { op: 'stop' }
   | { op: 'extend'; expires_at: number }
   | { op: 'status' }

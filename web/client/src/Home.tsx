@@ -74,6 +74,12 @@ export function Home({ state, reload }: { state: AppState; reload: () => void })
             <p className="text-sm">
               {turn ? (turn.mine ? 'La tienes tú.' : <>Ocupada. Se libera en <span className="num font-medium">{fmtLeft(turn.ends_at - now)}</span>.</>) : 'Libre.'}
             </p>
+            {state.live && !turn?.mine && approved && (
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <GlowLink href="#ver">Ver en vivo</GlowLink>
+                {state.watching > 0 && <span className="num text-xs text-muted">{state.watching === 1 ? '1 persona mirando' : `${state.watching} personas mirando`}</span>}
+              </div>
+            )}
           </Card>
 
           <Card title="Fila en vivo" aside={<Badge>{queue.length} en fila</Badge>}>

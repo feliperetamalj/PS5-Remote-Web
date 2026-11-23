@@ -31,6 +31,8 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
   let live: Live | null = null
   let stopPending = false // un stop que falló se reintenta en cada barrido
   let offerLock: Promise<unknown> = Promise.resolve() // una sola conexión armándose a la vez
+  const watchLimit = auth.rateLimiter(20, 5 * 60_000)
+  const watchOwner = new Map<number, number>() // id de conexión de espectador → usuario que la pidió
 
   const q = <T>(sql: string, ...a: (string | number | null)[]) => db.prepare(sql).all(...a) as T[]
   const str = (v: unknown, min: number, max: number, what: string) => {
@@ -52,6 +54,7 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
     if (!live) return
     db.prepare('UPDATE play_sessions SET ended_at = ?, end_reason = ? WHERE id = ?').run(now(), reason, live.session_id)
     live = null
+    watchOwner.clear() // media cierra a los espectadores junto con la partida
     stopPending = true
     await stopMedia()
   }
@@ -177,10 +180,14 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
       "SELECT id, user_id, status FROM bookings WHERE kind = 'queue' AND status IN ('requested','confirmed') AND started_at IS NULL ORDER BY created_at, id")
     const approved = queue.filter((e) => e.status === 'confirmed')
     const mine = queue.find((e) => e.user_id === user.id)
+    // Hay algo que mirar solo mientras alguien está conectado a la consola.
+    const watching = live ? Number((await media({ op: 'status' }).catch(() => ({} as Record<string, unknown>))).watchers ?? 0) : 0
     return c.json({
       now: now(),
       user,
       turn: t && { mine: t.user_id === user.id, state: t.state, kind: t.kind, ends_at: t.ends_at },
+      live: !!live,
+      watching,
       queue: {
         length: approved.length,
         mine: mine ? { id: mine.id, status: mine.status, position: approved.findIndex((e) => e.id === mine.id) + 1 } : null,
@@ -283,6 +290,36 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
 
   api.post('/play/leave', async (c) => {
     if (live?.user_id === needUser(c).id) await closeLive('left')
+    return c.json({ ok: true })
+  })
+
+  // ── Mirar (modo espectador) ────────────────────────────────────────────────
+  // Solo recepción: media no les crea canal de mando, así que no pueden enviar ningún input.
+  // No toca el turno ni la conexión de quien juega.
+  api.post('/watch/offer', async (c) => {
+    const user = needApproved(c)
+    await sweep()
+    if (!live) throw new HttpError(409, 'Nadie está jugando ahora')
+    if (live.user_id === user.id) throw new HttpError(409, 'Tú estás jugando')
+    if (!watchLimit(String(user.id), now())) throw new HttpError(429, 'Demasiados intentos. Espera unos minutos.')
+    let offer: Record<string, unknown>
+    try { offer = await media({ op: 'watch' }) }
+    catch (e) { throw new HttpError(503, (e as Error).message) }
+    const watchId = Number(offer.id)
+    watchOwner.set(watchId, user.id)
+    return c.json({ sdp: String(offer.sdp), id: watchId })
+  })
+
+  api.post('/watch/answer', async (c) => {
+    const user = needApproved(c)
+    const b = await json(c)
+    const watchId = Number(b.id)
+    if (!live || watchOwner.get(watchId) !== user.id) throw new HttpError(409, 'Sin conexión para mirar')
+    const sdp = str(b.sdp, 10, 20_000, 'SDP')
+    if (!sdp.startsWith('v=0')) throw new HttpError(400, 'SDP inválido')
+    watchOwner.delete(watchId) // una respuesta por conexión
+    try { await media({ op: 'watch_answer', id: watchId, sdp }) }
+    catch (e) { throw new HttpError(503, (e as Error).message) }
     return c.json({ ok: true })
   })
 

@@ -166,6 +166,7 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
           {phase === 'connecting' && <TextShimmer as="span" duration={1.2} className="rounded-lg bg-black/60 px-2.5 py-1 text-sm [--base-color:#a3a8c9] [--base-gradient-color:#ffffff]">Conectando con la PS5…</TextShimmer>}
           {!pad && <Badge tone="warn">Sin mando: conéctalo y aprieta un botón</Badge>}
           {stats && <PingMeter ms={stats.rtt} />}
+          {state.watching > 0 && <span className="num rounded-lg bg-black/60 px-2.5 py-1 text-sm" role="status">{state.watching === 1 ? '1 persona mirando' : `${state.watching} personas mirando`}</span>}
           {!fullscreen && (
             <span className="pointer-events-auto ml-auto flex gap-2">
               <Button onClick={() => setShowStats((s) => !s)} aria-pressed={showStats}>Estadísticas</Button>

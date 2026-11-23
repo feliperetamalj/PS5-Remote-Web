@@ -16,7 +16,7 @@ function setup() {
   const calls: string[] = []
   const { app, sweep } = createApp({
     db, origin: ORIGIN, now: () => clock.t,
-    media: async (r) => { calls.push(r.op); return { sdp: 'v=0 oferta del servidor' } },
+    media: async (r) => { calls.push(r.op); return { sdp: 'v=0 oferta del servidor', id: 7, watchers: 1 } },
   })
   const user = (name: string, status = 'approved', role = 'user') =>
     Number(db.prepare('INSERT INTO users(email, name, pass_hash, role, status, created_at) VALUES(?, ?, ?, ?, ?, ?)')
@@ -160,10 +160,23 @@ test('API: registro pendiente, aprobación, juego y corte al vencer', async () =
   assert.equal((await ana('POST', '/play/stats', { rtt_ms: 20, loss_pct: 0, jitter_ms: 2, decode_ms: 4 })).status, 200)
   assert.equal((await felipe('GET', '/admin/overview')).body.turn.live.rtt_ms, 15)
 
+  // Modo espectador: solo cuentas aprobadas, solo mientras alguien juega, y nunca quien juega.
+  const beto = client(app)
+  assert.equal((await beto('POST', '/signup', { email: 'beto@x.cl', name: 'Beto', password: 'clave-larga-2' })).status, 200)
+  assert.equal((await beto('POST', '/watch/offer', {})).status, 403) // pendiente no mira
+  assert.equal((await ana('POST', '/watch/offer', {})).status, 409) // la que juega no se mira a sí misma
+  assert.deepEqual([(await felipe('GET', '/state')).body.live, (await felipe('GET', '/state')).body.watching], [true, 1])
+  const watch = await felipe('POST', '/watch/offer', {})
+  assert.deepEqual([watch.status, watch.body.id], [200, 7])
+  assert.equal((await ana('POST', '/watch/answer', { id: 7, sdp: 'v=0 respuesta ajena' })).status, 409) // solo quien la pidió
+  assert.equal((await felipe('POST', '/watch/answer', { id: 7, sdp: 'v=0 respuesta del espectador' })).status, 200)
+  assert.equal((await felipe('POST', '/watch/answer', { id: 7, sdp: 'v=0 repetida' })).status, 409)
+
   // Vence la hora: el barrido corta el stream.
   clock.t = slot + HOUR + 1
   await sweep()
-  assert.deepEqual(calls.filter((c) => c !== 'status'), ['start', 'answer', 'stop'])
+  assert.deepEqual(calls.filter((c) => c !== 'status'), ['start', 'answer', 'watch', 'watch_answer', 'stop'])
+  assert.equal((await felipe('POST', '/watch/offer', {})).status, 409) // terminó la partida: nada que mirar
   assert.equal((await ana('POST', '/play/stats', { rtt_ms: 1 })).status, 409)
   assert.equal((await ana('POST', '/play/offer', {})).status, 403)
 

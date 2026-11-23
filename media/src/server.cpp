@@ -1,4 +1,4 @@
-// media serve: sesión de Remote Play (libchiaki) ↔ un peer WebRTC (libdatachannel).
+// media serve: sesión de Remote Play (libchiaki) ↔ un jugador y hasta MAX_WATCHERS espectadores por WebRTC (libdatachannel).
 // El video H.264 y el audio Opus se reenvían tal cual, sin decodificar ni recomprimir.
 // Solo web/ habla con este proceso, por un socket unix 0600 con una petición JSON por línea.
 #include <rtc/rtc.hpp>
@@ -27,6 +27,7 @@
 #include <shared_mutex>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 using json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
@@ -37,6 +38,9 @@ using namespace std::chrono_literals;
 static const uint32_t ALLOWED_BUTTONS = 0xFFFF & ~(CHIAKI_CONTROLLER_BUTTON_PS | CHIAKI_CONTROLLER_BUTTON_SHARE);
 static const auto PAD_TIMEOUT = 500ms; // sin paquetes del mando → todo suelto
 static const auto IDR_MIN_GAP = 500ms; // tope a los pedidos de cuadro clave
+static const size_t MAX_WATCHERS = 4; // espectadores a la vez
+static const auto WATCH_IDR_GAP = 3s; // entre todos los espectadores, un cuadro clave cada 3 s: no degradan al jugador
+static const auto WATCH_CONNECT_TIMEOUT = 20s; // un espectador que no termina de conectar libera su cupo
 
 struct Peer {
 	std::shared_ptr<rtc::PeerConnection> pc;
@@ -46,6 +50,8 @@ struct Peer {
 	uint16_t last_seq = 0;
 	bool have_seq = false, neutral = true;
 	Clock::time_point last_pad = Clock::now();
+	int id = 0; // solo espectadores
+	Clock::time_point created = Clock::now();
 };
 
 static ChiakiLog ps5_log;
@@ -67,6 +73,11 @@ static std::string ps5_quit_reason;
 
 static std::mutex peer_mu;
 static std::shared_ptr<Peer> peer;
+// Espectadores: reciben los mismos cuadros que el jugador. No tienen canal de mando, así que no pueden enviar input.
+static std::vector<std::shared_ptr<Peer>> watchers; // protegido por peer_mu
+static std::atomic<size_t> watcher_count{0}; // para no tomar el candado por cuadro cuando no hay nadie mirando
+static std::atomic<int64_t> last_watch_idr_ms{0};
+static int next_watch_id = 1;
 static rtc::binary video_header; // SPS/PPS: la PS5 lo manda una sola vez, al empezar
 static std::atomic<int64_t> expires_at{0}; // ms desde 1970; 0 = sin turno
 static std::atomic<int64_t> last_idr_ms{0};
@@ -79,6 +90,16 @@ static int64_t now_ms() {
 static std::shared_ptr<Peer> current_peer() {
 	std::lock_guard<std::mutex> l(peer_mu);
 	return peer;
+}
+/** A quién se le manda cada cuadro: el jugador primero y después los espectadores. */
+static std::vector<std::shared_ptr<Peer>> current_targets() {
+	std::vector<std::shared_ptr<Peer>> out;
+	std::lock_guard<std::mutex> l(peer_mu);
+	if(peer)
+		out.push_back(peer);
+	if(watcher_count.load())
+		out.insert(out.end(), watchers.begin(), watchers.end());
+	return out;
 }
 
 static void set_controller(const ChiakiControllerState &st) {
@@ -104,6 +125,14 @@ static void request_idr() {
 	if(session_alive && ps5_connected) // si la consola ya cortó, su conexión está destruida
 		chiaki_session_request_idr(&session);
 }
+static void request_watch_idr() {
+	int64_t t = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+	int64_t last = last_watch_idr_ms.load();
+	if(last != 0 && t - last < std::chrono::duration_cast<std::chrono::milliseconds>(WATCH_IDR_GAP).count())
+		return;
+	last_watch_idr_ms = t;
+	request_idr();
+}
 
 // ── chiaki → WebRTC ──────────────────────────────────────────────────────────
 static bool has_nal(const uint8_t *b, size_t n, int type) {
@@ -121,23 +150,28 @@ static bool on_video(uint8_t *buf, size_t size, int32_t, bool, void *) {
 		video_header.assign(reinterpret_cast<const std::byte *>(buf), reinterpret_cast<const std::byte *>(buf) + size);
 		return true;
 	}
-	auto p = current_peer();
-	if(!p || !p->video->isOpen())
+	auto targets = current_targets();
+	if(targets.empty())
 		return true;
 	auto ts = std::chrono::duration<double>(Clock::now() - t0);
-	try {
-		if(idr) { // el navegador necesita SPS/PPS junto a cada cuadro clave
-			rtc::binary frame;
-			{
-				std::lock_guard<std::mutex> l(peer_mu);
-				frame = video_header;
-			}
-			frame.insert(frame.end(), reinterpret_cast<const std::byte *>(buf), reinterpret_cast<const std::byte *>(buf) + size);
-			p->video->sendFrame(std::move(frame), ts);
-		} else {
-			p->video->sendFrame(reinterpret_cast<const std::byte *>(buf), size, ts);
+	rtc::binary frame;
+	if(idr) { // el navegador necesita SPS/PPS junto a cada cuadro clave
+		{
+			std::lock_guard<std::mutex> l(peer_mu);
+			frame = video_header;
 		}
-	} catch(const std::exception &) {
+		frame.insert(frame.end(), reinterpret_cast<const std::byte *>(buf), reinterpret_cast<const std::byte *>(buf) + size);
+	}
+	for(auto &p : targets) {
+		if(!p->video->isOpen())
+			continue;
+		try {
+			if(idr)
+				p->video->sendFrame(frame, ts);
+			else
+				p->video->sendFrame(reinterpret_cast<const std::byte *>(buf), size, ts);
+		} catch(const std::exception &) {
+		}
 	}
 	return true;
 }
@@ -148,12 +182,13 @@ static void on_audio_header(ChiakiAudioHeader *h, void *) {
 }
 static void on_audio_frame(uint8_t *buf, size_t size, void *) {
 	uint64_t n = audio_packets++;
-	auto p = current_peer();
-	if(!p || !p->audio->isOpen())
-		return;
-	try {
-		p->audio->sendFrame(reinterpret_cast<const std::byte *>(buf), size, rtc::FrameInfo(uint32_t(n * 480)));
-	} catch(const std::exception &) {
+	for(auto &p : current_targets()) {
+		if(!p->audio->isOpen())
+			continue;
+		try {
+			p->audio->sendFrame(reinterpret_cast<const std::byte *>(buf), size, rtc::FrameInfo(uint32_t(n * 480)));
+		} catch(const std::exception &) {
+		}
 	}
 }
 
@@ -282,6 +317,17 @@ static void peer_close() {
 	release_controller(); // después de cerrar: un paquete en vuelo del peer viejo ya no puede dejar nada apretado
 }
 
+static void watchers_close() {
+	std::vector<std::shared_ptr<Peer>> old;
+	{
+		std::lock_guard<std::mutex> l(peer_mu);
+		old.swap(watchers);
+		watcher_count = 0;
+	}
+	for(auto &w : old)
+		w->pc->close();
+}
+
 static void on_pad(const std::shared_ptr<Peer> &p, const rtc::binary &m) {
 	if(m.size() != 16 || current_peer() != p) // formato fijo, y solo del peer vigente
 		return;
@@ -309,27 +355,15 @@ static void on_pad(const std::shared_ptr<Peer> &p, const rtc::binary &m) {
 	set_controller(st);
 }
 
-static json op_start(const json &req) {
-	std::string err = session_open();
-	if(!err.empty())
-		return {{"error", err}};
-	peer_close();
-	int64_t until = req.value("expires_at", int64_t(0));
-	if(until <= now_ms()) { // sin vencimiento válido no se transmite: el corte propio de media no es opcional
-		session_close();
-		return {{"error", "Turno sin vencimiento válido"}};
-	}
-	expires_at = until;
-	auto fail = [](const char *msg) { // no dejar la consola tomada si la conexión no llegó a armarse
-		expires_at = 0;
-		session_close();
-		return json{{"error", msg}};
-	};
-
+/**
+ * Arma una conexión que envía el video y el audio de la PS5 y deja la oferta en `sdp`.
+ * Solo el jugador recibe el canal del mando; un espectador no tiene por dónde enviar input.
+ * Devuelve un mensaje de error, o vacío si salió bien.
+ */
+static std::string make_peer(const std::shared_ptr<Peer> &p, bool player, std::string &sdp) {
 	rtc::Configuration config;
-	config.portRangeBegin = config.portRangeEnd = udp_port; // un solo puerto UDP para abrir en el router
+	config.portRangeBegin = config.portRangeEnd = udp_port; // un solo puerto UDP para todos
 	config.enableIceUdpMux = true;
-	auto p = std::make_shared<Peer>();
 	p->pc = std::make_shared<rtc::PeerConnection>(config);
 	std::weak_ptr<Peer> wp = p;
 
@@ -339,11 +373,12 @@ static json op_start(const json &req) {
 		if(s == rtc::PeerConnection::GatheringState::Complete)
 			std::call_once(*gathered_once, [&] { gathered->set_value(); });
 	});
-	p->pc->onStateChange([wp](rtc::PeerConnection::State s) {
-		using S = rtc::PeerConnection::State;
-		if(s == S::Disconnected || s == S::Failed || s == S::Closed)
-			release_controller(); // se cayó el jugador: nada queda apretado
-	});
+	if(player)
+		p->pc->onStateChange([](rtc::PeerConnection::State s) {
+			using S = rtc::PeerConnection::State;
+			if(s == S::Disconnected || s == S::Failed || s == S::Closed)
+				release_controller(); // se cayó el jugador: nada queda apretado
+		});
 
 	// Video: H.264 Annex-B → RTP. Perfil Main, que es lo que entrega la PS5.
 	rtc::Description::Video video("video", rtc::Description::Direction::SendOnly);
@@ -354,9 +389,13 @@ static json op_start(const json &req) {
 	auto vpack = std::make_shared<rtc::H264RtpPacketizer>(rtc::NalUnit::Separator::StartSequence, vcfg);
 	vpack->addToChain(std::make_shared<rtc::RtcpSrReporter>(vcfg));
 	vpack->addToChain(std::make_shared<rtc::RtcpNackResponder>());
-	vpack->addToChain(std::make_shared<rtc::PliHandler>([] { request_idr(); })); // el navegador pide cuadro clave → se lo pedimos a la PS5
+	// El navegador pide cuadro clave → se lo pedimos a la PS5. Los espectadores comparten un tope más estricto.
+	vpack->addToChain(std::make_shared<rtc::PliHandler>([player] { player ? request_idr() : request_watch_idr(); }));
 	p->video->setMediaHandler(vpack);
-	p->video->onOpen([] { last_idr_ms = 0; request_idr(); }); // el que entra necesita partir de un cuadro clave
+	if(player)
+		p->video->onOpen([] { last_idr_ms = 0; request_idr(); }); // el que entra necesita partir de un cuadro clave
+	else
+		p->video->onOpen([] { request_watch_idr(); });
 
 	// Audio: Opus tal cual. msid distinto al del video: el navegador no sincroniza labios y no retrasa el video.
 	rtc::Description::Audio audio("audio", rtc::Description::Direction::SendOnly);
@@ -368,28 +407,98 @@ static json op_start(const json &req) {
 	apack->addToChain(std::make_shared<rtc::RtcpSrReporter>(acfg));
 	p->audio->setMediaHandler(apack);
 
-	// Mando: sin orden ni reintentos. El canal lo crea el servidor; los que abra el navegador se ignoran.
-	rtc::DataChannelInit init;
-	init.reliability.unordered = true;
-	init.reliability.maxRetransmits = 0;
-	p->pad = p->pc->createDataChannel("pad", init);
-	p->pad->onMessage([wp](rtc::binary m) { if(auto p = wp.lock()) on_pad(p, m); }, [](std::string) {});
+	if(player) {
+		// Mando: sin orden ni reintentos. El canal lo crea el servidor; los que abra el navegador se ignoran.
+		rtc::DataChannelInit init;
+		init.reliability.unordered = true;
+		init.reliability.maxRetransmits = 0;
+		p->pad = p->pc->createDataChannel("pad", init);
+		p->pad->onMessage([wp](rtc::binary m) { if(auto p = wp.lock()) on_pad(p, m); }, [](std::string) {});
+	}
 
 	p->pc->setLocalDescription();
 	if(gathered->get_future().wait_for(5s) != std::future_status::ready)
-		return fail("No se pudieron reunir los candidatos de red");
+		return "No se pudieron reunir los candidatos de red";
 	auto local = p->pc->localDescription();
 	if(!local)
-		return fail("Sin descripción local");
+		return "Sin descripción local";
+	sdp = std::string(*local);
+	if(!public_ip.empty()) // fuera de casa: una sola puerta de entrada, y ninguna IP local a la vista
+		sdp = rewrite_candidates(sdp, [](const std::string &) { return false; },
+			"a=candidate:1 1 UDP 2130706431 " + public_ip + " " + std::to_string(public_port) + " typ host");
+	return "";
+}
+
+static json op_start(const json &req) {
+	std::string err = session_open();
+	if(!err.empty())
+		return {{"error", err}};
+	peer_close();
+	watchers_close(); // partida nueva: quien quiera mirar vuelve a entrar
+	int64_t until = req.value("expires_at", int64_t(0));
+	if(until <= now_ms()) { // sin vencimiento válido no se transmite: el corte propio de media no es opcional
+		session_close();
+		return {{"error", "Turno sin vencimiento válido"}};
+	}
+	expires_at = until;
+	auto p = std::make_shared<Peer>();
+	std::string sdp;
+	err = make_peer(p, true, sdp);
+	if(!err.empty()) { // no dejar la consola tomada si la conexión no llegó a armarse
+		expires_at = 0;
+		p->pc->close();
+		session_close();
+		return {{"error", err}};
+	}
 	{
 		std::lock_guard<std::mutex> l(peer_mu);
 		peer = p;
 	}
-	std::string sdp = std::string(*local);
-	if(!public_ip.empty()) // fuera de casa: una sola puerta de entrada, y ninguna IP local a la vista
-		sdp = rewrite_candidates(sdp, [](const std::string &) { return false; },
-			"a=candidate:1 1 UDP 2130706431 " + public_ip + " " + std::to_string(public_port) + " typ host");
 	return {{"sdp", sdp}};
+}
+
+/** Un espectador pide mirar la partida en curso. No toca la sesión con la PS5 ni la conexión del jugador. */
+static json op_watch() {
+	if(!current_peer() || !ps5_connected || !expires_at.load())
+		return {{"error", "Nadie está jugando ahora"}};
+	if(watcher_count.load() >= MAX_WATCHERS)
+		return {{"error", "Ya hay " + std::to_string(MAX_WATCHERS) + " personas mirando. Prueba en un rato."}};
+	auto p = std::make_shared<Peer>();
+	std::string sdp;
+	std::string err = make_peer(p, false, sdp);
+	if(!err.empty()) {
+		p->pc->close();
+		return {{"error", err}};
+	}
+	{
+		std::lock_guard<std::mutex> l(peer_mu);
+		p->id = next_watch_id++;
+		watchers.push_back(p);
+		watcher_count = watchers.size();
+	}
+	if(!expires_at.load()) { // el turno venció mientras se armaba la conexión
+		watchers_close();
+		return {{"error", "Nadie está jugando ahora"}};
+	}
+	return {{"sdp", sdp}, {"id", p->id}};
+}
+
+static json op_watch_answer(const json &req) {
+	int id = req.value("id", 0);
+	std::shared_ptr<Peer> p;
+	{
+		std::lock_guard<std::mutex> l(peer_mu);
+		for(auto &w : watchers)
+			if(w->id == id)
+				p = w;
+	}
+	if(!p)
+		return {{"error", "La conexión para mirar ya no existe"}};
+	std::string sdp = req.at("sdp").get<std::string>();
+	if(!public_ip.empty())
+		sdp = rewrite_candidates(sdp, candidate_is_public, "");
+	p->pc->setRemoteDescription(rtc::Description(sdp, "answer"));
+	return {{"ok", true}};
 }
 
 static json op_answer(const json &req) {
@@ -409,9 +518,14 @@ static json handle(const json &req) {
 		return op_start(req);
 	if(op == "answer")
 		return op_answer(req);
+	if(op == "watch")
+		return op_watch();
+	if(op == "watch_answer")
+		return op_watch_answer(req);
 	if(op == "stop") {
 		expires_at = 0;
 		peer_close();
+		watchers_close();
 		session_close(); // libera la consola para Felipe
 		return {{"ok", true}};
 	}
@@ -424,7 +538,8 @@ static json handle(const json &req) {
 	}
 	if(op == "status") {
 		auto p = current_peer();
-		return {{"ps5", ps5_connected ? "connected" : "idle"}, {"peer", p ? int(p->pc->state()) : -1}, {"expires_at", expires_at.load()}};
+		return {{"ps5", ps5_connected ? "connected" : "idle"}, {"peer", p ? int(p->pc->state()) : -1}, {"expires_at", expires_at.load()},
+			{"watchers", watcher_count.load()}};
 	}
 	if(op == "wake") {
 		uint64_t credential = strtoull(ps5_regist_key.c_str(), nullptr, 16);
@@ -447,7 +562,8 @@ static json handle(const json &req) {
 	return {{"error", "Operación desconocida"}};
 }
 
-// Vigilante: suelta el mando si el jugador calla y corta al vencer el turno aunque web/ no avise.
+// Vigilante: suelta el mando si el jugador calla, corta al vencer el turno aunque web/ no avise
+// y libera el cupo de los espectadores que se fueron.
 static void watchdog() {
 	for(;;) {
 		std::this_thread::sleep_for(50ms);
@@ -462,8 +578,29 @@ static void watchdog() {
 				release_controller();
 		}
 		int64_t exp = expires_at.load();
+		if(watcher_count.load()) {
+			using S = rtc::PeerConnection::State;
+			std::vector<std::shared_ptr<Peer>> gone;
+			{
+				std::lock_guard<std::mutex> l(peer_mu);
+				for(auto it = watchers.begin(); it != watchers.end();) {
+					S st = (*it)->pc->state();
+					bool dead = st == S::Disconnected || st == S::Failed || st == S::Closed ||
+						(st != S::Connected && Clock::now() - (*it)->created > WATCH_CONNECT_TIMEOUT);
+					if(dead) {
+						gone.push_back(*it);
+						it = watchers.erase(it);
+					} else
+						++it;
+				}
+				watcher_count = watchers.size();
+			}
+			for(auto &w : gone) // se cierran fuera del candado y en este hilo, no dentro de su propio callback
+				w->pc->close();
+		}
 		if(exp && now_ms() >= exp && expires_at.compare_exchange_strong(exp, 0)) { // no pisa un turno recién iniciado
 			peer_close();
+			watchers_close();
 			session_close();
 		}
 	}

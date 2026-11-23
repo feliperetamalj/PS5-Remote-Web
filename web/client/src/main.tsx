@@ -6,6 +6,7 @@ import { api, usePoll, Button } from './ui.tsx'
 import { Auth } from './Auth.tsx'
 import { Home } from './Home.tsx'
 import { Play } from './Play.tsx'
+import { Watch } from './Watch.tsx'
 import { Logo, Wordmark } from './kit.tsx'
 
 // El panel (con Chart.js) solo lo descarga el admin.
@@ -15,6 +16,8 @@ export type AppState = {
   now: number
   user: { id: number; email: string; name: string; role: 'user' | 'admin'; status: 'pending' | 'approved' | 'blocked' } | null
   turn: { mine: boolean; state: 'active' | 'offered'; kind: 'slot' | 'queue'; ends_at: number } | null
+  live: boolean // hay alguien conectado a la consola: se puede mirar
+  watching: number // espectadores conectados
   queue: { length: number; mine: { id: number; status: 'requested' | 'confirmed'; position: number } | null }
 }
 
@@ -37,6 +40,7 @@ function App() {
   const user = state.user
   const view = hash === '#jugar' ? 'play' : hash === '#admin' && user.role === 'admin' ? 'admin' : 'home'
   if (view === 'play') return <Play state={state} reload={reload} />
+  if (hash === '#ver') return <Watch state={state} />
 
   return (
     <>
