@@ -9,7 +9,8 @@ SVC_USER="${1:?Uso: sudo deploy/install-services.sh <usuario> [host-publico:puer
 PUBLIC="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SVC_HOME="$(dscl . -read "/Users/$SVC_USER" NFSHomeDirectory | awk '{print $2}')"
-NODE="$(sudo -u "$SVC_USER" sh -lc 'command -v node')"
+# Sin Homebrew (Macs Intel) node vive en ~/.local/node/bin y no está en el PATH de un shell de login.
+NODE="$(sudo -u "$SVC_USER" sh -lc 'PATH="$HOME/.local/node/bin:$PATH"; command -v node')" || { echo "No encuentro node para $SVC_USER"; exit 1; }
 [ -x "$REPO/media/build/out/media" ] || { echo "Primero corre deploy/install.sh como $SVC_USER"; exit 1; }
 sudo -u "$SVC_USER" mkdir -p "$SVC_HOME/Library/Logs/ps5-stream"
 

@@ -6,7 +6,12 @@ set -eu
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CONF="$HOME/.config/ps5-stream"
 
-for tool in brew node npm cmake git; do
+# En Macs Intel las dependencias vienen de deploy/toolchain-intel.sh en vez de Homebrew.
+TC="${PS5_TOOLCHAIN:-$HOME/ps5-toolchain}"
+if [ -d "$TC/prefix" ]; then PATH="$TC/prefix/bin:$TC/py/bin:$PATH"; DEPS_TOOL=cmake; else DEPS_TOOL=brew; fi
+[ -d "$HOME/.local/node/bin" ] && PATH="$HOME/.local/node/bin:$PATH"
+export PATH
+for tool in "$DEPS_TOOL" node npm cmake git; do
   command -v "$tool" >/dev/null || { echo "Falta '$tool'. Ver la tabla de dependencias en README.md"; exit 1; }
 done
 node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' || { echo "Se necesita Node 24 o superior"; exit 1; }
