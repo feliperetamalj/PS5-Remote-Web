@@ -1,0 +1,14 @@
+# secretos y datos locales (nunca al repo)
+config.json
+config.*.json
+!config.example.json
+*.db
+*.db-*
+data/
+# artefactos
+node_modules/
+web/dist/
+build/
+*.h264
+*.log
+.DS_Store
