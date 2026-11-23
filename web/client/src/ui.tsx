@@ -47,8 +47,8 @@ export function fmtLeft(ms: number) {
 
 type Variant = 'primary' | 'ghost' | 'danger'
 const VARIANT: Record<Variant, string> = {
-  primary: 'bg-accent text-on-accent font-semibold hover:brightness-110',
-  ghost: 'border border-line text-fg hover:bg-raised',
+  primary: 'neon-fill text-on-accent font-semibold',
+  ghost: 'border border-white/15 bg-white/5 text-fg hover:bg-white/10',
   danger: 'border border-danger/50 text-danger hover:bg-danger/10',
 }
 export function Button({ variant = 'ghost', className = '', ...p }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant }) {
@@ -72,7 +72,7 @@ export function ActionButton({ run, children, ...p }: Omit<Parameters<typeof But
 
 export function Card({ title, aside, children, className = '' }: { title?: string; aside?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={`min-w-0 rounded-2xl border border-line bg-surface p-5 ${className}`}>
+    <section className={`glass-card relative min-w-0 rounded-2xl p-5 ${className}`}>
       {(title || aside) && (
         <header className="mb-4 flex items-center justify-between gap-3">
           {title && <h2 className="text-base font-semibold">{title}</h2>}
@@ -93,7 +93,7 @@ export const Badge = ({ tone = 'muted', children }: { tone?: Tone; children: Rea
   <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${TONE[tone]}`}>{children}</span>
 
 export const Stat = ({ label, value, tone }: { label: string; value: ReactNode; tone?: 'warn' | 'danger' }) => (
-  <div className="rounded-xl bg-raised px-4 py-3">
+  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
     <div className="text-xs text-muted">{label}</div>
     <div className={`num text-xl font-semibold ${tone === 'danger' ? 'text-danger' : tone === 'warn' ? 'text-warn' : ''}`}>{value}</div>
   </div>

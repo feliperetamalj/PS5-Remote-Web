@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppState } from './main.tsx'
 import { api, useNow, fmtLeft, Button, Badge } from './ui.tsx'
+import { TextShimmer } from './motion/text-shimmer.tsx'
+import { Logo } from './kit.tsx'
 import { readPad, encodePad, samePad, NEUTRAL } from '../../shared/pad.ts'
 
 type Stats = { rtt: number; buffer: number; decode: number; fps: number; dropped: number; lost: number; lossPct: number; kbps: number }
@@ -138,7 +140,7 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
 
   const live = phase === 'live' || phase === 'connecting'
   return (
-    <div ref={stage} className="relative flex min-h-dvh flex-col bg-black">
+    <div ref={stage} className={`relative flex min-h-dvh flex-col ${live ? 'bg-black' : ''}`}>
       <video ref={video} muted autoPlay playsInline aria-label="Video de la PS5" className={`h-dvh w-full object-contain ${live ? '' : 'hidden'}`} />
       <audio ref={audio} autoPlay />
 
@@ -146,7 +148,7 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start gap-2 p-3">
           <span className={`num rounded-lg bg-black/60 px-2.5 py-1 text-sm font-semibold ${left < 60_000 ? 'text-danger' : left < 5 * 60_000 ? 'text-warn' : 'text-fg'}`}
             role="timer" aria-label="Tiempo restante">{fmtLeft(left)}</span>
-          {phase === 'connecting' && <Badge tone="accent">Conectando…</Badge>}
+          {phase === 'connecting' && <TextShimmer as="span" duration={1.2} className="rounded-lg bg-black/60 px-2.5 py-1 text-sm [--base-color:#a3a8c9] [--base-gradient-color:#ffffff]">Conectando con la PS5…</TextShimmer>}
           {!pad && <Badge tone="warn">Sin mando: conéctalo y aprieta un botón</Badge>}
           {stats && stats.rtt > PING_WARN_MS && <Badge tone="warn">Ping alto: {stats.rtt.toFixed(0)} ms</Badge>}
           {!fullscreen && (
@@ -176,13 +178,15 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
       )}
 
       {!live && (
-        <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-5 px-4 py-10">
-          <h1 className="text-2xl font-semibold">{phase === 'ended' ? 'Sesión terminada' : 'Listo para jugar'}</h1>
+        <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-10">
+         <div className="glass-card flex flex-col gap-5 rounded-3xl p-6 sm:p-8">
+          <Logo size={40} />
+          <h1 className="font-display text-2xl">{phase === 'ended' ? 'Sesión terminada' : 'Listo para jugar'}</h1>
           {message && <p role="alert" className="text-sm text-warn">{message}</p>}
           {myTurn ? (
             <>
               <p className="num text-sm text-muted">Te quedan {fmtLeft(left)} de turno.</p>
-              <div className="rounded-xl bg-surface p-4 text-sm">
+              <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm">
                 {pad
                   ? <><Badge tone="ok">Mando detectado</Badge><p className="mt-2 break-words text-muted">{pad.id}</p></>
                   : <><Badge tone="warn">Sin mando</Badge><p className="mt-2 text-muted">Conecta tu mando (USB o Bluetooth) y aprieta cualquier botón para que Chrome lo vea.</p></>}
@@ -197,6 +201,7 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
             </>
           ) : <p className="text-sm text-muted">Ahora no es tu turno.</p>}
           <a href="#" className="text-sm text-accent underline-offset-4 hover:underline">Volver a reservas</a>
+         </div>
         </main>
       )}
     </div>

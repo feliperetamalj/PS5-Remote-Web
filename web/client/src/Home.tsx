@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
 import type { AppState } from './main.tsx'
+import { Countdown, GlowLink, Trail } from './kit.tsx'
+import { Spotlight } from './motion/spotlight.tsx'
 import { api, usePoll, useNow, fmtDay, fmtLeft, ActionButton, Badge, Card, Empty } from './ui.tsx'
 
 type Slot = { start_at: number; hour: number; taken: boolean; waiting: number; mine: { id: number; status: 'requested' | 'confirmed'; position: number } | null }
@@ -27,15 +29,19 @@ export function Home({ state, reload }: { state: AppState; reload: () => void })
       )}
 
       {turn?.mine && (
-        <motion.section initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}
-          className="flex flex-wrap items-center gap-4 rounded-2xl border border-accent/40 bg-accent/10 p-5">
-          <div className="mr-auto">
-            <h2 className="text-xl font-semibold">Es tu turno</h2>
-            <p className="num text-sm text-muted" aria-live="off">
-              {turn.state === 'offered' ? `Tienes ${fmtLeft(turn.ends_at - now)} para entrar o pasa el siguiente.` : `Te quedan ${fmtLeft(turn.ends_at - now)}.`}
+        <motion.section initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
+          className="glass-card relative flex flex-wrap items-center gap-5 rounded-3xl p-6 sm:p-8">
+          <Trail size={140} />
+          <div className="relative mr-auto">
+            <p className="text-sm font-medium uppercase tracking-widest text-violet">{turn.state === 'offered' ? 'La consola te espera' : 'Tu hora está corriendo'}</p>
+            <h2 className="mt-1 font-display text-3xl sm:text-4xl">Es tu <span className="neon-text">turno</span></h2>
+            <p className="mt-2 flex flex-wrap items-center gap-2 text-muted">
+              {turn.state === 'offered' ? 'Entra antes de' : 'Te quedan'}
+              <Countdown ms={turn.ends_at - now} className="num text-2xl font-semibold text-fg" />
+              {turn.state === 'offered' && 'o pasa el siguiente.'}
             </p>
           </div>
-          <a href="#jugar" className="press inline-flex min-h-12 items-center rounded-xl bg-accent px-6 font-semibold text-on-accent hover:brightness-110">Jugar ahora</a>
+          <GlowLink href="#jugar">Jugar ahora</GlowLink>
         </motion.section>
       )}
 
@@ -46,8 +52,9 @@ export function Home({ state, reload }: { state: AppState; reload: () => void })
               <div role="tablist" aria-label="Día" className="-mx-1 mb-4 flex gap-1 overflow-x-auto px-1 pb-2 [scrollbar-width:thin]">
                 {cal.data.days.map((d, i) => (
                   <button key={d.date} role="tab" aria-selected={i === day} onClick={() => setDay(i)}
-                    className={`press min-h-11 shrink-0 rounded-xl px-3 text-sm capitalize ${i === day ? 'bg-accent text-on-accent font-semibold' : 'bg-raised text-muted hover:text-fg'}`}>
-                    {i === 0 ? 'Hoy' : fmtDay(d.slots[0].start_at)}
+                    className={`press relative min-h-11 shrink-0 rounded-xl px-3.5 text-sm capitalize ${i === day ? 'font-semibold text-on-accent' : 'bg-white/5 text-muted hover:text-fg'}`}>
+                    {i === day && <motion.span layoutId="day-pill" className="neon-fill absolute inset-0 rounded-xl" />}
+                    <span className="relative">{i === 0 ? 'Hoy' : fmtDay(d.slots[0].start_at)}</span>
                   </button>
                 ))}
               </div>
@@ -63,7 +70,7 @@ export function Home({ state, reload }: { state: AppState; reload: () => void })
         </Card>
 
         <div className="flex min-w-0 flex-col gap-5">
-          <Card title="Consola ahora">
+          <Card title="Consola ahora" aside={<span className="relative flex size-2.5"><span className={`absolute inline-flex size-full rounded-full opacity-60 motion-safe:animate-ping ${turn ? 'bg-warn' : 'bg-ok'}`} /><span className={`relative inline-flex size-2.5 rounded-full ${turn ? 'bg-warn' : 'bg-ok'}`} /></span>}>
             <p className="text-sm">
               {turn ? (turn.mine ? 'La tienes tú.' : <>Ocupada. Se libera en <span className="num font-medium">{fmtLeft(turn.ends_at - now)}</span>.</>) : 'Libre.'}
             </p>
@@ -100,9 +107,10 @@ export function Home({ state, reload }: { state: AppState; reload: () => void })
 function SlotRow({ slot: s, canBook, refresh }: { slot: Slot; canBook: boolean; refresh: () => Promise<unknown> }) {
   const label = `${String(s.hour).padStart(2, '0')}:00`
   return (
-    <li className="flex min-h-14 items-center gap-3 rounded-xl bg-raised px-3 py-2">
-      <span className="num w-12 font-semibold">{label}</span>
-      <span className="mr-auto flex flex-wrap gap-1.5">
+    <li className="flex min-h-14 items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+      <Spotlight size={140} className="from-violet-500/35 via-blue-500/20 to-transparent" />
+      <span className="num relative w-14 font-display text-base">{label}</span>
+      <span className="relative mr-auto flex flex-wrap gap-1.5">
         {s.mine?.status === 'confirmed' ? <Badge tone="ok">Confirmada</Badge>
           : s.mine ? <Badge tone="warn">{s.taken ? `En espera · #${s.mine.position}` : `Pedida · #${s.mine.position}`}</Badge>
           : s.taken ? <Badge tone="danger">Ocupado</Badge>

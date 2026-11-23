@@ -19,7 +19,10 @@ PS5 ──Remote Play (LAN)──► media/ (C++: libchiaki + libdatachannel) �
 | Node 24+ | `brew install node` | Servidor web y build del frontend |
 | Paquetes npm | `cd web && npm ci` | Ver `web/package.json` |
 
-(La lista de `media/` se completa en la Fase 1.)
+| Para compilar `media/` | `brew install cmake pkg-config opus openssl@3 json-c miniupnpc libevent python` | libchiaki y libdatachannel |
+| Para probar | `brew install ffmpeg gh` | `ffplay` para ver el `.h264`; `gh` para GitHub |
+
+Diseño: estilo "cosmic" (catálogo design-styles), componentes copiados de [motion-primitives](https://github.com/ibelick/motion-primitives) en `web/client/src/motion/`, Chart.js en el panel y la fuente Audiowide servida desde el propio sitio.
 
 ## Desarrollo
 

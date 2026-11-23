@@ -1,5 +1,8 @@
 import { useState } from 'react'
-import { api, usePoll, useNow, fmtSlot, fmtDay, fmtTime, fmtLeft, ActionButton, Badge, Card, Empty, Stat } from './ui.tsx'
+import { ChartBox, SERIES } from './charts.tsx'
+import { AnimatedNumber } from './motion/animated-number.tsx'
+import { Countdown, Trail } from './kit.tsx'
+import { api, usePoll, useNow, fmtSlot, fmtDay, fmtTime, ActionButton, Badge, Card, Empty, Stat } from './ui.tsx'
 
 type U = { id: number; email: string; name: string; role: string; status: 'pending' | 'approved' | 'blocked'; created_at: number; played_ms: number }
 type B = { id: number; user_id: number; name: string; kind: 'slot' | 'queue'; start_at: number | null; status: 'requested' | 'confirmed'; created_at: number; offered_at: number | null; started_at: number | null }
@@ -32,8 +35,7 @@ export function Admin() {
     const xs = done.map((s) => s[k]).filter((x): x is number => x != null)
     return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null
   }
-  const loss = avg('loss_pct')
-
+  
   return (
     <div className="flex flex-col gap-5">
       <Card title="Sesión en curso" aside={data.media.error ? <Badge tone="danger">Streaming caído</Badge> : <Badge tone="ok">Streaming listo</Badge>}>
@@ -41,9 +43,9 @@ export function Admin() {
         {data.turn ? (
           <>
             <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <span className="text-lg font-semibold">{data.turn.name}</span>
+              {data.turn.live && <Trail size={120} />}<span className="font-display text-xl">{data.turn.name}</span>
               <Badge tone={data.turn.live ? 'ok' : 'warn'}>{data.turn.live ? 'Jugando' : data.turn.state === 'offered' ? 'Tiene el turno, aún no entra' : 'En su hora, sin conectar'}</Badge>
-              <span className="num text-sm text-muted">Quedan {fmtLeft(data.turn.ends_at - now)}</span>
+              <span className="flex items-center gap-1.5 text-sm text-muted">Quedan <Countdown ms={data.turn.ends_at - now} className="num text-lg font-semibold text-fg" /></span>
             </div>
             <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Stat label="Ping" value={ms(data.turn.live?.rtt_ms)} tone={(data.turn.live?.rtt_ms ?? 0) > 15 ? 'warn' : undefined} />
@@ -71,7 +73,7 @@ export function Admin() {
           {pending.length === 0 ? <Empty>No hay cuentas pendientes.</Empty> : (
             <ul className="flex flex-col gap-2">
               {pending.map((u) => (
-                <li key={u.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-raised px-3 py-2">
+                <li key={u.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                   <span className="mr-auto min-w-0">
                     <span className="block font-medium">{u.name}</span>
                     <span className="block truncate text-xs text-muted">{u.email} · {fmtDay(u.created_at)}</span>
@@ -91,7 +93,7 @@ export function Admin() {
                 const same = requests.filter((r) => r.start_at === b.start_at)
                 const taken = slots.find((r) => r.start_at === b.start_at && r.status === 'confirmed')
                 return (
-                  <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-raised px-3 py-2">
+                  <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                     <span className="mr-auto min-w-0">
                       <span className="block font-medium">{b.name}</span>
                       <span className="block text-xs capitalize text-muted">{fmtSlot(b.start_at!)}</span>
@@ -110,7 +112,7 @@ export function Admin() {
           {queue.length === 0 ? <Empty>La fila está vacía.</Empty> : (
             <ol className="flex flex-col gap-2">
               {queue.map((b) => (
-                <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-raised px-3 py-2">
+                <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                   <span className="mr-auto font-medium">{b.name}</span>
                   {b.status === 'confirmed'
                     ? <Badge tone="ok">{b.offered_at ? 'Tiene el turno' : 'En fila'}</Badge>
@@ -126,7 +128,7 @@ export function Admin() {
           {confirmed.length === 0 ? <Empty>No hay reservas confirmadas.</Empty> : (
             <ul className="flex flex-col gap-2">
               {confirmed.map((b) => (
-                <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-raised px-3 py-2">
+                <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                   <span className="mr-auto min-w-0">
                     <span className="block font-medium">{b.name}</span>
                     <span className="block text-xs capitalize text-muted">{fmtSlot(b.start_at!)}</span>
@@ -139,38 +141,7 @@ export function Admin() {
         </Card>
       </div>
 
-      <Card title="Últimos 14 días">
-        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <Stat label="Sesiones" value={done.length} />
-          <Stat label="Horas jugadas" value={hours(done.reduce((a, s) => a + (s.ended_at! - s.started_at), 0))} />
-          <Stat label="Ping promedio" value={ms(avg('rtt_ms'))} tone={(avg('rtt_ms') ?? 0) > 15 ? 'warn' : undefined} />
-          <Stat label="Decodificación" value={ms(avg('decode_ms'))} />
-          <Stat label="Pérdida promedio" value={loss == null ? '—' : `${loss.toFixed(2)} %`} tone={(loss ?? 0) > 1 ? 'danger' : undefined} />
-        </div>
-        <DailyChart sessions={done} now={now} />
-        <h3 className="mb-2 mt-6 text-sm font-semibold">Sesiones recientes</h3>
-        {done.length === 0 ? <Empty>Todavía no hay sesiones.</Empty> : (
-          <div className="overflow-x-auto">
-            <table className="num w-full min-w-[36rem] text-left text-sm">
-              <thead className="text-xs text-muted">
-                <tr><th className="py-2 font-medium">Jugador</th><th className="font-medium">Inicio</th><th className="font-medium">Duración</th><th className="font-medium">Ping</th><th className="font-medium">Pérdida</th><th className="font-medium">Fin</th></tr>
-              </thead>
-              <tbody>
-                {done.slice(0, 15).map((s) => (
-                  <tr key={s.id} className="border-t border-line">
-                    <td className="py-2">{s.name}</td>
-                    <td className="capitalize">{fmtDay(s.started_at)} {fmtTime(s.started_at)}</td>
-                    <td>{Math.round((s.ended_at! - s.started_at) / 60_000)} min</td>
-                    <td>{ms(s.rtt_ms)}</td>
-                    <td>{s.loss_pct == null ? '—' : `${s.loss_pct.toFixed(2)} %`}</td>
-                    <td className="text-muted">{END[s.end_reason ?? ''] ?? s.end_reason ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+      <Metrics done={done} now={now} avg={avg} />
 
       <div className="grid gap-5 lg:grid-cols-[1fr_22rem]">
         <Card title="Usuarios">
@@ -200,25 +171,90 @@ export function Admin() {
   )
 }
 
-/** Minutos jugados por día. Barras en HTML: sin librería de gráficos para un solo gráfico. */
-function DailyChart({ sessions, now }: { sessions: S[]; now: number }) {
+type Avg = (k: 'rtt_ms' | 'loss_pct' | 'jitter_ms' | 'decode_ms') => number | null
+const dur = (s: S) => s.ended_at! - s.started_at
+const COLS: [keyof S | 'dur', string][] = [['name', 'Jugador'], ['started_at', 'Inicio'], ['dur', 'Duración'], ['rtt_ms', 'Ping'], ['loss_pct', 'Pérdida'], ['end_reason', 'Fin']]
+
+/** Dashboard de los últimos 14 días: KPIs arriba, gráficos al medio y tabla ordenable abajo. */
+function Metrics({ done, now, avg }: { done: S[]; now: number; avg: Avg }) {
+  const [sort, setSort] = useState<{ key: keyof S | 'dur'; asc: boolean }>({ key: 'started_at', asc: false })
   const days = Array.from({ length: 14 }, (_, i) => now - (13 - i) * 86_400_000)
-  const mins = days.map((d) => Math.round(sessions.filter((s) => fmtDay(s.started_at) === fmtDay(d)).reduce((a, s) => a + (s.ended_at! - s.started_at), 0) / 60_000))
-  const max = Math.max(...mins, 60)
+  const mins = days.map((d) => Math.round(done.filter((s) => fmtDay(s.started_at) === fmtDay(d)).reduce((a, s) => a + dur(s), 0) / 60_000))
+  const byPlayer = Object.entries(done.reduce<Record<string, number>>((m, s) => ({ ...m, [s.name]: (m[s.name] ?? 0) + dur(s) }), {}))
+    .sort((a, b) => b[1] - a[1]).slice(0, 6)
+  const recent = done.slice(0, 30).reverse()
+  const val = (s: S, k: keyof S | 'dur') => (k === 'dur' ? dur(s) : s[k]) ?? -1
+  const rows = [...done].sort((a, b) => {
+    const [x, y] = [val(a, sort.key), val(b, sort.key)]
+    return (x < y ? -1 : x > y ? 1 : 0) * (sort.asc ? 1 : -1)
+  })
+  const totalMin = Math.round(done.reduce((a, s) => a + dur(s), 0) / 60_000)
+  const rtt = avg('rtt_ms'), loss = avg('loss_pct')
+
   return (
-    <figure>
-      <figcaption className="mb-2 text-sm font-semibold">Minutos jugados por día</figcaption>
-      <ol className="flex h-32 items-end gap-1.5" aria-label="Minutos jugados por día, últimos 14 días">
-        {days.map((d, i) => (
-          <li key={d} className="group relative flex h-full flex-1 flex-col justify-end" title={`${fmtDay(d)}: ${mins[i]} min`}>
-            <span className="sr-only">{fmtDay(d)}: {mins[i]} minutos</span>
-            {mins[i] > 0 && <span aria-hidden className="num mb-1 text-center text-[0.65rem] text-muted">{mins[i]}</span>}
-            <span aria-hidden className={`rounded-t-md ${mins[i] ? 'bg-accent' : 'bg-line'}`} style={{ height: `${Math.max((mins[i] / max) * 100, 2)}%` }} />
-          </li>
-        ))}
-      </ol>
-      <div aria-hidden className="mt-1 flex justify-between text-xs capitalize text-muted"><span>{fmtDay(days[0])}</span><span>Hoy</span></div>
-    </figure>
+    <Card title="Últimos 14 días">
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Sesiones" value={<AnimatedNumber value={done.length} springOptions={{ bounce: 0, duration: 800 }} />} />
+        <Stat label="Minutos jugados" value={<AnimatedNumber value={totalMin} springOptions={{ bounce: 0, duration: 800 }} />} />
+        <Stat label="Ping promedio" value={ms(rtt)} tone={(rtt ?? 0) > 15 ? 'warn' : undefined} />
+        <Stat label="Pérdida promedio" value={loss == null ? '—' : `${loss.toFixed(2)} %`} tone={(loss ?? 0) > 1 ? 'danger' : undefined} />
+      </div>
+
+      {done.length === 0 ? <Empty>Todavía no hay sesiones. Los gráficos aparecen cuando alguien juegue.</Empty> : (
+        <>
+          <div className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
+            <figure className="min-w-0">
+              <figcaption className="mb-2 text-sm font-semibold">Minutos jugados por día</figcaption>
+              <ChartBox summary={`Minutos jugados por día: ${days.map((d, i) => `${fmtDay(d)} ${mins[i]}`).join(', ')}`}
+                config={{ type: 'bar', data: { labels: days.map((d) => fmtDay(d)), datasets: [{ label: 'Minutos', data: mins, backgroundColor: SERIES[1], borderRadius: 6 }] },
+                  options: { plugins: { legend: { display: false } }, scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } } }} />
+            </figure>
+            <figure className="min-w-0">
+              <figcaption className="mb-2 text-sm font-semibold">Tiempo por jugador</figcaption>
+              <ChartBox summary={`Horas por jugador: ${byPlayer.map(([n, t]) => `${n} ${hours(t)}`).join(', ')}`}
+                config={{ type: 'doughnut', data: { labels: byPlayer.map(([n]) => n), datasets: [{ data: byPlayer.map(([, t]) => Math.round(t / 60_000)), backgroundColor: SERIES, borderColor: '#0f1124', borderWidth: 2 }] },
+                  options: { ...({ cutout: '62%' } as object), plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { label: (c) => ` ${c.label}: ${c.parsed} min` } } } } }} />
+            </figure>
+          </div>
+          <figure className="mt-6 min-w-0">
+            <figcaption className="mb-2 text-sm font-semibold">Calidad de red por sesión (ms)</figcaption>
+            <ChartBox height={200} summary={`Ping y decodificación de las últimas ${recent.length} sesiones`}
+              config={{ type: 'line', data: { labels: recent.map((s) => `${s.name} · ${fmtDay(s.started_at)} ${fmtTime(s.started_at)}`), datasets: [
+                { label: 'Ping', data: recent.map((s) => s.rtt_ms), borderColor: SERIES[0], backgroundColor: SERIES[0], tension: 0.3, pointRadius: 3 },
+                { label: 'Colchón', data: recent.map((s) => s.jitter_ms), borderColor: SERIES[2], backgroundColor: SERIES[2], tension: 0.3, pointRadius: 3 },
+                { label: 'Decodificación', data: recent.map((s) => s.decode_ms), borderColor: SERIES[3], backgroundColor: SERIES[3], tension: 0.3, pointRadius: 3 }] },
+                options: { interaction: { mode: 'index', intersect: false }, scales: { x: { display: false }, y: { beginAtZero: true } } } }} />
+          </figure>
+
+          <h3 className="mb-2 mt-6 text-sm font-semibold">Sesiones</h3>
+          <div className="max-h-96 overflow-auto rounded-xl border border-white/10">
+            <table className="num w-full min-w-[36rem] text-left text-sm">
+              <thead className="sticky top-0 bg-surface text-xs text-muted">
+                <tr>{COLS.map(([k, label]) => (
+                  <th key={k} aria-sort={sort.key === k ? (sort.asc ? 'ascending' : 'descending') : 'none'} className="font-medium">
+                    <button className="press min-h-10 w-full px-3 text-left hover:text-fg" onClick={() => setSort({ key: k, asc: sort.key === k ? !sort.asc : false })}>
+                      {label}{sort.key === k ? (sort.asc ? ' ▲' : ' ▼') : ''}
+                    </button>
+                  </th>))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 100).map((s) => (
+                  <tr key={s.id} className="border-t border-white/10 hover:bg-white/5">
+                    <td className="px-3 py-2">{s.name}</td>
+                    <td className="px-3 capitalize">{fmtDay(s.started_at)} {fmtTime(s.started_at)}</td>
+                    <td className="px-3">{Math.round(dur(s) / 60_000)} min</td>
+                    <td className="px-3">{ms(s.rtt_ms)}</td>
+                    <td className="px-3">{s.loss_pct == null ? '—' : `${s.loss_pct.toFixed(2)} %`}</td>
+                    <td className="px-3 text-muted">{END[s.end_reason ?? ''] ?? s.end_reason ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Card>
   )
 }
 
