@@ -11,7 +11,7 @@ Hay una compuerta después de las Fases 0 y 2: si los números de latencia no da
 | F3 | Web app: cuentas, reservas, fila, admin y pantalla de juego | Hecho, sin streaming real |
 | F4 | Integración `web/` ↔ `media/`: turnos, corte al vencer, estadísticas | Pendiente |
 | F4b | Modo espectador (ADR-003) | Pendiente |
-| F5 | Internet: CGNAT, puerto UDP, playit.gg con HTTPS, usuario `ps5stream`, revisiones de seguridad | Pendiente |
+| F5 | **Primero:** cambiar el registro de Remote Play de la cuenta principal a una cuenta de invitados. Luego internet: CGNAT, puerto UDP, playit.gg con HTTPS, usuario `ps5stream`, revisiones de seguridad | Pendiente |
 | F6 | Traspaso a OpenClaw: scripts, launchd y runbook | Pendiente |
 | F7 | Prueba real: un amigo en Santiago juega 30 min | Pendiente |
 

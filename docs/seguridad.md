@@ -13,7 +13,7 @@ No se abre ningún puerto TCP en el router. No se expone SSH ni el panel de admi
 
 ## Amigo → sistema de la PS5
 1. **Filtro en el servidor:** `buttons &= ALLOWED_MASK`. Se bloquean **PS** (menú de inicio) y **Create** (`CHIAKI_CONTROLLER_BUTTON_SHARE`, capturas y transmisiones). Solo el admin puede enviar PS, desde el panel, para casos de emergencia.
-2. **Cuenta PSN de invitados** (checklist para Felipe):
+2. **Cuenta PSN de invitados** (checklist para Felipe). **Pendiente obligatorio antes de la Fase 5:** durante el desarrollo el registro se hace con la cuenta principal de Felipe, solo para medir en la red local. Antes de abrir a internet hay que crear la cuenta de invitados, registrar de nuevo con ella y borrar el registro de la cuenta principal (Ajustes → Sistema → Uso a distancia → Historial de conexiones).
    - [ ] Crear una cuenta "miembro de la familia" dedicada (por ejemplo `felipe-invitados`), con **límite de gasto 0**, comunicación y chat de voz restringidos, y el nivel de edad que permita GTA 6.
    - [ ] Iniciar sesión con ella en la PS5 y registrar Remote Play **con esa cuenta**. Como la PS5 es la consola principal de Felipe, el juego y PS Plus se comparten.
    - [ ] En la cuenta principal de Felipe: pedir contraseña en cada compra (Ajustes → Usuarios y cuentas → Cuenta → Pago).
