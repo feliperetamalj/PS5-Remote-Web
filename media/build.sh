@@ -28,4 +28,8 @@ cmake -S . -B build/out -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE="$PY" \
   $DEPS > build/cmake.log 2>&1 || { tail -20 build/cmake.log; exit 1; }
 cmake --build build/out -j"${PS5_JOBS:-8}" > build/make.log 2>&1 || { grep -E "error|Undefined|not found" build/make.log | head -20; exit 1; }
 git -C third_party/chiaki-ng/third-party/nanopb clean -fdq generator
+# 5. Firma ad-hoc con identificador fijo. Sin firma, macOS le niega la red local al binario cuando lo lanza
+#    launchd ("No route to host" hacia la PS5) y ni siquiera muestra el aviso de permiso. Con firma aparece
+#    "¿Permitir que media busque dispositivos en las redes locales?" la primera vez (hay que aceptarlo en pantalla).
+codesign -s - -f --identifier cl.felipardo.ps5stream.media build/out/media 2>/dev/null || echo "aviso: no se pudo firmar build/out/media"
 echo "listo: $PWD/build/out/media"
