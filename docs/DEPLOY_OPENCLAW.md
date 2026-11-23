@@ -41,6 +41,19 @@ node --version   # debe ser 24 o superior
 
 En Intel, Homebrew vive en `/usr/local`. Si el usuario del servicio no encuentra `brew` o `node`, agregar `/usr/local/bin` a su PATH.
 
+**MacBook Pro Intel (lo que se usó de verdad, 2026-11-22):** el Mac no tenía Homebrew, y Homebrew ya no publica binarios para macOS Intel (solo arm64), así que `brew install` compilaría todo desde el código. En su lugar:
+
+```bash
+deploy/toolchain-intel.sh   # sin sudo; deja cmake, pkgconf, protoc, OpenSSL 3.5.4, opus 1.5.2, json-c 0.18, miniupnpc 2.2.8 y libevent 2.1.12 en ~/ps5-toolchain
+```
+
+- Tarda unos 6 minutos con 6 hilos. `media/build.sh` e `install.sh` detectan `~/ps5-toolchain` y lo usan en vez de Homebrew.
+- Node 24 ya estaba en `~/.local/node/bin` (v24.21.0); `install.sh` e `install-services.sh` lo buscan ahí.
+- Las bibliotecas van enlazadas estáticamente: el binario `media` solo depende de bibliotecas del sistema.
+- Para deshacerlo: `rm -rf ~/ps5-toolchain`.
+
+**Puerto:** en este Mac el `8080` ya lo usa otra aplicación (`~/Apps/disco`). Se usa **`8091`** en `config.json`; `ps5ctl.sh` lee el puerto de ahí. Donde este documento diga `8080`, en el MacBook Pro es `8091` (también el destino del túnel HTTPS de playit).
+
 ### 3. Código e instalación
 
 ```bash
