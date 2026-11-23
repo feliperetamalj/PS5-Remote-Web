@@ -9,6 +9,8 @@
 #include <chiaki/log.h>
 #include <chiaki/session.h>
 
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -23,6 +25,7 @@
 #include <iostream>
 #include <mutex>
 #include <shared_mutex>
+#include <sstream>
 #include <thread>
 
 using json = nlohmann::json;
@@ -49,6 +52,10 @@ static ChiakiLog ps5_log;
 static std::string ps5_host, ps5_regist_key;
 static uint8_t ps5_morning[16];
 static uint16_t udp_port;
+// Modo público: el video entra por un túnel UDP (playit.gg). Se anuncia solo esa dirección y
+// no se comparten las IP locales del Mac. Vacío = modo red local.
+static std::string public_ip;
+static uint16_t public_port = 0;
 
 static ChiakiSession session;
 static std::shared_mutex session_mu; // compartido: usar la sesión · exclusivo: crearla o destruirla
@@ -216,6 +223,53 @@ static std::string session_open() {
 	return "La PS5 no aceptó la conexión (" + why + "). Si está en reposo, despiértala.";
 }
 
+// ── SDP en modo público ─────────────────────────────────────────────────────
+/** Reescribe las líneas a=candidate: `keep` decide cuáles quedan y `extra` se agrega en la primera sección de medios. */
+static std::string rewrite_candidates(const std::string &sdp, const std::function<bool(const std::string &)> &keep, const std::string &extra) {
+	std::istringstream in(sdp);
+	std::string out, line;
+	bool added = extra.empty();
+	int media_sections = 0;
+	while(std::getline(in, line)) {
+		if(!line.empty() && line.back() == '\r')
+			line.pop_back();
+		if(line.rfind("m=", 0) == 0 && ++media_sections == 2 && !added) { // la primera sección terminó sin candidatos
+			out += extra + "\r\n";
+			added = true;
+		}
+		if(line.rfind("a=candidate:", 0) == 0) {
+			if(!added) {
+				out += extra + "\r\n";
+				added = true;
+			}
+			if(!keep(line))
+				continue;
+		}
+		out += line + "\r\n";
+	}
+	if(!added)
+		out += extra + "\r\n";
+	return out;
+}
+
+/** ¿El candidato apunta a una IP pública? Descarta privadas, loopback, link-local, CGNAT y nombres (.local). */
+static bool candidate_is_public(const std::string &line) {
+	std::istringstream in(line);
+	std::string tok, addr;
+	for(int i = 0; i < 5 && in >> tok; i++) // foundation, componente, transporte, prioridad, dirección
+		addr = tok;
+	in_addr v4;
+	if(inet_pton(AF_INET, addr.c_str(), &v4) == 1) {
+		uint32_t a = ntohl(v4.s_addr);
+		return !((a >> 24) == 10 || (a >> 24) == 127 || (a >> 24) == 0 || (a >> 20) == 0xAC1 || (a >> 16) == 0xC0A8 ||
+			(a >> 16) == 0xA9FE || (a >> 22) == (0x64400000u >> 22) || (a >> 28) >= 0xE);
+	}
+	in6_addr v6;
+	if(inet_pton(AF_INET6, addr.c_str(), &v6) == 1)
+		return (v6.s6_addr[0] & 0xE0) == 0x20; // solo unicast global (2000::/3)
+	return false;
+}
+
 // ── peer WebRTC ──────────────────────────────────────────────────────────────
 static void peer_close() {
 	std::shared_ptr<Peer> old;
@@ -331,14 +385,21 @@ static json op_start(const json &req) {
 		std::lock_guard<std::mutex> l(peer_mu);
 		peer = p;
 	}
-	return {{"sdp", std::string(*local)}};
+	std::string sdp = std::string(*local);
+	if(!public_ip.empty()) // fuera de casa: una sola puerta de entrada, y ninguna IP local a la vista
+		sdp = rewrite_candidates(sdp, [](const std::string &) { return false; },
+			"a=candidate:1 1 UDP 2130706431 " + public_ip + " " + std::to_string(public_port) + " typ host");
+	return {{"sdp", sdp}};
 }
 
 static json op_answer(const json &req) {
 	auto p = current_peer();
 	if(!p)
 		return {{"error", "No hay conexión en curso"}};
-	p->pc->setRemoteDescription(rtc::Description(req.at("sdp").get<std::string>(), "answer"));
+	std::string sdp = req.at("sdp").get<std::string>();
+	if(!public_ip.empty()) // no sondear direcciones internas porque un navegador las mencione
+		sdp = rewrite_candidates(sdp, candidate_is_public, "");
+	p->pc->setRemoteDescription(rtc::Description(sdp, "answer"));
 	return {{"ok", true}};
 }
 
@@ -408,7 +469,7 @@ static void watchdog() {
 	}
 }
 
-extern "C" int serve_main(const char *keys_path, const char *socket_path, int port) {
+extern "C" int serve_main(const char *keys_path, const char *socket_path, int port, const char *public_addr) {
 	try {
 		json keys = json::parse(std::ifstream(keys_path));
 		ps5_host = keys.at("host").get<std::string>();
@@ -423,6 +484,21 @@ extern "C" int serve_main(const char *keys_path, const char *socket_path, int po
 		return 1;
 	}
 	udp_port = uint16_t(port);
+	if(public_addr && *public_addr) { // host:puerto del túnel; el navegador solo acepta IP, así que se resuelve aquí
+		std::string s = public_addr;
+		size_t colon = s.rfind(':');
+		addrinfo hints = {}, *res = nullptr;
+		hints.ai_family = AF_INET;
+		if(colon == std::string::npos || getaddrinfo(s.substr(0, colon).c_str(), nullptr, &hints, &res) != 0 || !res) {
+			std::cerr << "Dirección pública inválida (se espera host:puerto): " << s << std::endl;
+			return 1;
+		}
+		char ip[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in *>(res->ai_addr)->sin_addr, ip, sizeof(ip));
+		freeaddrinfo(res);
+		public_ip = ip;
+		public_port = uint16_t(std::stoi(s.substr(colon + 1)));
+	}
 	signal(SIGPIPE, SIG_IGN); // si web/ cuelga antes de leer la respuesta, write() falla en vez de matar el proceso
 	chiaki_log_init(&ps5_log, CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING, chiaki_log_cb_print, nullptr);
 	if(chiaki_lib_init() != CHIAKI_ERR_SUCCESS)
@@ -444,7 +520,8 @@ extern "C" int serve_main(const char *keys_path, const char *socket_path, int po
 		return 1;
 	}
 	std::thread(watchdog).detach();
-	std::cout << "media escuchando en " << socket_path << " · PS5 " << ps5_host << " · UDP " << udp_port << std::endl;
+	std::cout << "media escuchando en " << socket_path << " · PS5 " << ps5_host << " · UDP " << udp_port
+		<< (public_ip.empty() ? " · modo red local" : " · público " + public_ip + ":" + std::to_string(public_port)) << std::endl;
 
 	for(;;) {
 		int c = accept(srv, nullptr, nullptr);

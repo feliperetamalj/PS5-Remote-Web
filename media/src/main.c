@@ -310,12 +310,12 @@ static int cmd_dump(const char *keys_path, const char *out_path, int seconds, in
 	return dump_connected && v_calls > 1 ? 0 : 1;
 }
 
-int serve_main(const char *keys_path, const char *socket_path, int port); // server.cpp
+int serve_main(const char *keys_path, const char *socket_path, int port, const char *public_addr); // server.cpp
 
 int main(int argc, char **argv)
 {
 	if(argc >= 4 && strcmp(argv[1], "serve") == 0)
-		return serve_main(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 50000);
+		return serve_main(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 50000, argc > 5 ? argv[5] : NULL);
 	if(argc >= 4 && strcmp(argv[1], "dump") == 0)
 	{
 		int seconds = 10, press_x = 0, hd720 = 0;
@@ -333,6 +333,6 @@ int main(int argc, char **argv)
 		return cmd_register(argv[2], argv[3], argv[4], argv[5]);
 	if(argc == 3 && strcmp(argv[1], "discover") == 0)
 		return cmd_discover(argv[2]);
-	fprintf(stderr, "Uso: media serve <claves> <socket> [puerto-udp]\n     media discover <ip>\n     media dump <claves> <salida.h264> [segundos] [--press-x] [--720]\n     media register <ip> <id-de-cuenta-base64> <pin> <archivo-de-claves>\n");
+	fprintf(stderr, "Uso: media serve <claves> <socket> [puerto-udp] [host-publico:puerto]\n     media discover <ip>\n     media dump <claves> <salida.h264> [segundos] [--press-x] [--720]\n     media register <ip> <id-de-cuenta-base64> <pin> <archivo-de-claves>\n");
 	return 2;
 }

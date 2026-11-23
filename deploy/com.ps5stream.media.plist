@@ -11,6 +11,7 @@
     <string>__HOME__/.config/ps5-stream/ps5.json</string>
     <string>__HOME__/.config/ps5-stream/media.sock</string>
     <string>50000</string>
+    <string>__PUBLIC__</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

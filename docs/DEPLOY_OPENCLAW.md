@@ -100,7 +100,23 @@ Comprobación: `curl -sI https://ps5remote.felipardo.cl/api/health` responde `20
 
 Desde que este paso funciona, la página de acceso queda visible en internet. Jugar desde fuera de la casa todavía no funciona (falta abrir el UDP, etapa 2), pero las cuentas y el panel sí son alcanzables: por eso el paso 6 (admin con contraseña fuerte) va antes.
 
-### 8. Verificar
+### 8. Video desde fuera de la casa (etapa 2, solo cuando Felipe lo pida)
+
+La conexión de Felipe tiene indicios de CGNAT, así que el video de quienes juegan desde fuera entra por un **túnel UDP de playit.gg** (hay nodo en Chile; el túnel HTTPS medía 6 ms desde la casa).
+
+1. En playit, crear un túnel **UDP** con destino local `127.0.0.1`, puerto `50000`.
+2. Anotar la dirección y el puerto públicos que playit le asigna.
+3. Reinstalar los servicios con esa dirección:
+   ```bash
+   sudo ~/ps5-remote-web/deploy/install-services.sh ps5stream <host-publico>:<puerto>
+   ```
+4. `tail ~/Library/Logs/ps5-stream/media.log` debe decir `público <ip>:<puerto>`.
+
+En ese modo el servidor anuncia solo la dirección del túnel y deja de compartir las IP locales del Mac. Los que juegan dentro de la casa también pasan por el túnel.
+
+Antes de este paso, Felipe tiene que haber cambiado el registro de Remote Play a la cuenta PSN de invitados (ver `docs/seguridad.md`).
+
+### 9. Verificar
 
 ```bash
 ~/ps5-remote-web/deploy/ps5ctl.sh status

@@ -1,10 +1,12 @@
 #!/bin/sh
 # Registra los dos servicios en launchd para que arranquen con el Mac y se reinicien si caen.
-# Uso: sudo deploy/install-services.sh <usuario-del-servicio>
+# Uso: sudo deploy/install-services.sh <usuario-del-servicio> [host-publico:puerto]
+# El segundo argumento es la dirección del túnel UDP de playit.gg. Sin él, el video solo funciona dentro de la red local.
 # Es el único paso que necesita sudo. Solo escribe dos archivos en /Library/LaunchDaemons.
 set -eu
 [ "$(id -u)" = 0 ] || { echo "Correr con sudo"; exit 1; }
-SVC_USER="${1:?Uso: sudo deploy/install-services.sh <usuario>}"
+SVC_USER="${1:?Uso: sudo deploy/install-services.sh <usuario> [host-publico:puerto]}"
+PUBLIC="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SVC_HOME="$(dscl . -read "/Users/$SVC_USER" NFSHomeDirectory | awk '{print $2}')"
 NODE="$(sudo -u "$SVC_USER" sh -lc 'command -v node')"
@@ -15,7 +17,7 @@ for name in media web; do
   label="com.ps5stream.$name"
   dest="/Library/LaunchDaemons/$label.plist"
   launchctl bootout "system/$label" 2>/dev/null || true
-  sed -e "s#__USER__#$SVC_USER#g" -e "s#__HOME__#$SVC_HOME#g" -e "s#__REPO__#$REPO#g" -e "s#__NODE__#$NODE#g" \
+  sed -e "s#__USER__#$SVC_USER#g" -e "s#__HOME__#$SVC_HOME#g" -e "s#__REPO__#$REPO#g" -e "s#__NODE__#$NODE#g" -e "s#__PUBLIC__#$PUBLIC#g" \
     "$REPO/deploy/$label.plist" > "$dest"
   chown root:wheel "$dest" && chmod 644 "$dest"
   launchctl bootstrap system "$dest"

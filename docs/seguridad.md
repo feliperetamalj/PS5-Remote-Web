@@ -51,5 +51,5 @@ Quedan abiertos los dos puntos marcados arriba como pendiente y riesgo aceptado.
 
 ## Privacidad
 - WebRTC le muestra al amigo la IP pública del Mac. Es inevitable si el video va directo y se acepta.
-- **Pendiente para la etapa 2:** hoy la oferta SDP incluye también las IP locales del Mac (hacen falta para jugar dentro de la red de la casa). Antes de abrir el UDP a internet hay que publicar solo la IP pública y rechazar candidatos privados en la respuesta del navegador.
+- En modo red local la oferta incluye las IP locales del Mac, porque hacen falta para conectar. En **modo público** (`media serve … <host:puerto>`), el servidor anuncia solo la dirección del túnel UDP y descarta los candidatos privados que mande el navegador. Este modo está escrito pero todavía no se ha probado en vivo.
 - Solo se guardan nombre, email y el historial de sesiones con métricas de red.
