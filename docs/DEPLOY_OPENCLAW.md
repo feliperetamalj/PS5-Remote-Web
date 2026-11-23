@@ -144,7 +144,7 @@ En ese modo el servidor anuncia solo la dirección del túnel y deja de comparti
 
 El registro de Remote Play ya está hecho con la cuenta PSN de invitados (`felipardo777web`, 2026-11-22), así que ese requisito de `docs/seguridad.md` está cumplido. No hace falta otro PIN.
 
-**Permiso de Red local de macOS:** `media` necesita llegar a la PS5 por la red de la casa. Lanzado por launchd y sin firma, macOS se lo niega sin avisar (`No route to host`). `media/build.sh` firma el binario con el identificador `cl.felipardo.ps5stream.media`; la primera vez hay que aceptar en pantalla "¿Permitir que … busque dispositivos en las redes locales?". Si tras recompilar vuelve el error, revisar Ajustes del Sistema → Privacidad y seguridad → Red local.
+**Permiso de Red local de macOS:** `media` necesita llegar a la PS5 por la red de la casa. Lanzado por launchd y sin firma, macOS se lo niega sin avisar (`No route to host`). `media/build.sh` firma el binario con el identificador `cl.felipardo.ps5stream.media`; la primera vez hay que aceptar en pantalla "¿Permitir que … busque dispositivos en las redes locales?". **Cada recompilación cambia el binario y macOS vuelve a negarle la red local** hasta que alguien acepte el aviso en pantalla (comprobado el 2026-11-23). Por eso una actualización de `media` no se puede aplicar sin alguien frente al Mac: compilar, dejar el binario nuevo aparte, lanzarlo una vez por launchd (`launchctl submit … media discover 192.168.100.44`) para que aparezca el aviso, aceptar, y recién entonces reemplazar con `mv` y reiniciar. Pendiente: firmar con un certificado propio y estable para que el permiso sobreviva a las recompilaciones.
 
 ### 9. Verificar
 

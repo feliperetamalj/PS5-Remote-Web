@@ -10,7 +10,7 @@ Hay una compuerta después de las Fases 0 y 2: si los números de latencia no da
 | F2 | WebRTC en LAN: video y audio sin recomprimir, mando por DataChannel | Funciona en este Mac; falta medir latencia y probar desde otro equipo con mando real |
 | F3 | Web app: cuentas, reservas, fila, admin y pantalla de juego | Hecho, sin streaming real |
 | F4 | Integración `web/` ↔ `media/`: turnos, corte al vencer, estadísticas | Pendiente |
-| F4b | Modo espectador (ADR-003) | Pendiente |
+| F4b | Modo espectador (ADR-003) | Escrito (2026-11-23): `watch` en `media`, `POST /api/watch/offer` y página "Ver en vivo". Tope de 4, sin canal de mando, cuadros enviados desde un hilo aparte. **Sin probar con una partida real ni medido el efecto en el jugador.** Falta el interruptor del admin |
 | F5 | **Primero:** cambiar el registro de Remote Play de la cuenta principal a una cuenta de invitados. Luego internet: CGNAT, puerto UDP, playit.gg con HTTPS, usuario `ps5stream`, revisiones de seguridad | Pendiente |
 | F6 | Traspaso a OpenClaw: scripts, launchd y runbook | Pendiente |
 | F7 | Prueba real: un amigo en Santiago juega 30 min | Pendiente |
