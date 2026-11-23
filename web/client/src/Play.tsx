@@ -12,6 +12,22 @@ const PAD_HZ_MS = 4 // ~250 Hz; requestAnimationFrame daría solo 60
 const HEARTBEAT_MS = 50
 const PING_WARN_MS = 15
 
+/** Medidor de ping: barras y milisegundos, siempre visible mientras se juega. */
+function PingMeter({ ms }: { ms: number }) {
+  const level = ms <= PING_WARN_MS ? 3 : ms <= 40 ? 2 : 1
+  const color = level === 3 ? 'bg-ok' : level === 2 ? 'bg-warn' : 'bg-danger'
+  const label = level === 3 ? 'bueno' : level === 2 ? 'alto' : 'muy alto'
+  return (
+    <span className="num flex items-center gap-2 rounded-lg bg-black/60 px-2.5 py-1 text-sm" role="status" aria-label={`Ping ${ms.toFixed(0)} milisegundos, ${label}`}>
+      <span aria-hidden className="flex items-end gap-0.5">
+        {[1, 2, 3].map((i) => <span key={i} className={`w-1 rounded-sm ${i <= level ? color : 'bg-white/25'}`} style={{ height: 4 + i * 4 }} />)}
+      </span>
+      <span aria-hidden>{ms.toFixed(0)} ms</span>
+      {level < 3 && <span aria-hidden className={level === 2 ? 'text-warn' : 'text-danger'}>{label}</span>}
+    </span>
+  )
+}
+
 function pickPad(): Gamepad | null {
   const pads = navigator.getGamepads().filter((g): g is Gamepad => !!g && g.connected)
   return pads.find((g) => g.mapping === 'standard') ?? pads[0] ?? null
@@ -53,12 +69,6 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
     const timers: number[] = []
     session.current = { pc, timers }
     try {
-      pc.addTransceiver('video', { direction: 'recvonly' })
-      pc.addTransceiver('audio', { direction: 'recvonly' })
-      // Sin orden ni reintentos: un estado viejo del mando no sirve, llega el siguiente en 4 ms.
-      const dc = pc.createDataChannel('pad', { ordered: false, maxRetransmits: 0 })
-      dc.binaryType = 'arraybuffer'
-
       pc.ontrack = (e) => {
         // Sin colchón: preferimos un cuadro perdido a un cuadro tarde.
         const r = e.receiver as RTCRtpReceiver & { jitterBufferTarget?: number; playoutDelayHint?: number }
@@ -73,25 +83,30 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
         if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') stop('Se perdió la conexión con la consola.')
       }
 
-      await pc.setLocalDescription(await pc.createOffer())
-      // Señalización en un solo POST: se espera a tener los candidatos ICE (máx. 2 s).
+      // Mando: el canal "pad" lo abre el servidor (sin orden ni reintentos: un estado viejo no sirve).
+      // Se lee a ~250 Hz y se envía al cambiar, más un latido cada 50 ms.
+      pc.ondatachannel = ({ channel: dc }) => {
+        if (dc.label !== 'pad') return
+        let seq = 0, last = NEUTRAL, sentAt = 0
+        timers.push(window.setInterval(() => {
+          if (dc.readyState !== 'open') return
+          const gp = pickPad()
+          const s = gp && document.hasFocus() ? readPad(gp, deadzoneRef.current) : NEUTRAL
+          const t = performance.now()
+          if (!samePad(s, last) || t - sentAt >= HEARTBEAT_MS) { dc.send(encodePad(seq++, s)); last = s; sentAt = t }
+        }, PAD_HZ_MS))
+      }
+
+      // Señalización: el servidor ofrece, el navegador responde cuando ya tiene sus candidatos ICE (máx. 2 s).
+      const offer = await api<{ sdp: string }>('POST', '/play/offer', {})
+      await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp })
+      await pc.setLocalDescription(await pc.createAnswer())
       await new Promise<void>((done) => {
         if (pc.iceGatheringState === 'complete') return done()
         pc.onicegatheringstatechange = () => pc.iceGatheringState === 'complete' && done()
         setTimeout(done, 2000)
       })
-      const answer = await api<{ sdp: string }>('POST', '/play/offer', { sdp: pc.localDescription!.sdp })
-      await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp })
-
-      // Mando: se lee a ~250 Hz y se envía al cambiar, más un latido cada 50 ms.
-      let seq = 0, last = NEUTRAL, sentAt = 0
-      timers.push(window.setInterval(() => {
-        if (dc.readyState !== 'open') return
-        const gp = pickPad()
-        const s = gp && document.hasFocus() ? readPad(gp, deadzoneRef.current) : NEUTRAL
-        const t = performance.now()
-        if (!samePad(s, last) || t - sentAt >= HEARTBEAT_MS) { dc.send(encodePad(seq++, s)); last = s; sentAt = t }
-      }, PAD_HZ_MS))
+      await api('POST', '/play/answer', { sdp: pc.localDescription!.sdp })
 
       let prev: any = null, n = 0
       timers.push(window.setInterval(async () => {
@@ -150,7 +165,7 @@ export function Play({ state, reload }: { state: AppState; reload: () => void })
             role="timer" aria-label="Tiempo restante">{fmtLeft(left)}</span>
           {phase === 'connecting' && <TextShimmer as="span" duration={1.2} className="rounded-lg bg-black/60 px-2.5 py-1 text-sm [--base-color:#a3a8c9] [--base-gradient-color:#ffffff]">Conectando con la PS5…</TextShimmer>}
           {!pad && <Badge tone="warn">Sin mando: conéctalo y aprieta un botón</Badge>}
-          {stats && stats.rtt > PING_WARN_MS && <Badge tone="warn">Ping alto: {stats.rtt.toFixed(0)} ms</Badge>}
+          {stats && <PingMeter ms={stats.rtt} />}
           {!fullscreen && (
             <span className="pointer-events-auto ml-auto flex gap-2">
               <Button onClick={() => setShowStats((s) => !s)} aria-pressed={showStats}>Estadísticas</Button>

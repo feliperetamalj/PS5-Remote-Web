@@ -215,20 +215,28 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
 
   // ── Jugar ──────────────────────────────────────────────────────────────────
   api.post('/play/offer', async (c) => {
+    // Señalización en dos pasos: el servidor de streaming ofrece (él define los códecs) y el navegador responde.
     const user = needApproved(c)
-    const b = await json(c)
-    const sdp = str(b.sdp, 10, 20_000, 'SDP')
-    if (!sdp.startsWith('v=0')) throw new HttpError(400, 'SDP inválido')
     let t = await sweep()
     if (!t || t.user_id !== user.id) throw new HttpError(403, 'No es tu turno')
     await closeLive('reconnect') // una sola conexión: la nueva reemplaza a la anterior
     t = turns.startTurn(db, t, now())
-    let answer: Record<string, unknown>
-    try { answer = await media({ op: 'start', sdp, expires_at: t.ends_at }) }
+    let offer: Record<string, unknown>
+    try { offer = await media({ op: 'start', expires_at: t.ends_at }) }
     catch (e) { throw new HttpError(503, (e as Error).message) }
     const session_id = Number(db.prepare('INSERT INTO play_sessions(booking_id, user_id, started_at) VALUES(?, ?, ?)').run(t.booking_id, user.id, now()).lastInsertRowid)
     live = { session_id, user_id: user.id, booking_id: t.booking_id }
-    return c.json({ sdp: String(answer.sdp), ends_at: t.ends_at })
+    return c.json({ sdp: String(offer.sdp), ends_at: t.ends_at })
+  })
+
+  api.post('/play/answer', async (c) => {
+    const user = needUser(c)
+    if (live?.user_id !== user.id) throw new HttpError(409, 'Sin sesión activa')
+    const sdp = str((await json(c)).sdp, 10, 20_000, 'SDP')
+    if (!sdp.startsWith('v=0')) throw new HttpError(400, 'SDP inválido')
+    try { await media({ op: 'answer', sdp }) }
+    catch (e) { throw new HttpError(503, (e as Error).message) }
+    return c.json({ ok: true })
   })
 
   api.post('/play/stats', async (c) => {

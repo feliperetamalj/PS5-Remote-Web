@@ -12,5 +12,12 @@ set(CHIAKI_ENABLE_STEAMDECK_NATIVE OFF CACHE BOOL "" FORCE)
 set(CHIAKI_ENABLE_STEAM_SHORTCUT OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/chiaki-ng EXCLUDE_FROM_ALL)
 
-add_executable(media src/main.c)
-target_link_libraries(media chiaki-lib)
+# libdatachannel estática, solo transporte de medios y DataChannel.
+set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
+set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
+set(NO_TESTS ON CACHE BOOL "" FORCE)
+add_subdirectory(third_party/libdatachannel EXCLUDE_FROM_ALL)
+
+add_executable(media src/main.c src/server.cpp)
+target_include_directories(media PRIVATE third_party/libdatachannel/deps/json/include)
+target_link_libraries(media chiaki-lib datachannel-static)

@@ -41,7 +41,23 @@ Solo `web/` habla con `media/`, por un socket unix `0600`. La web se publica por
 
 Pendiente para la Fase 2: el bitrate medido (1,4 Mbps) es de una pantalla casi estática; hay que medirlo en juego. Y confirmar que Chrome acepta perfil Main nivel 5.0 por WebRTC (`profile-level-id`).
 
-## ADR-001: Pila WebRTC del servidor (pendiente de Fase 2)
+## ADR-001: Pila WebRTC del servidor
+
+**Estado:** Aceptada · **Fecha:** 2026-11-22
+
+**Decisión:** libdatachannel v0.24.8 (submódulo, estática). El servidor de streaming **ofrece** y el navegador responde, en dos pasos (`/api/play/offer` y `/api/play/answer`). Así los códecs los fija el servidor y el canal `pad` lo crea él; los canales que abra el navegador se ignoran.
+
+**Primera prueba de punta a punta** (este Mac, navegador integrado de la app, PS5 por cable, menú de ajustes):
+
+| Qué | Resultado |
+|---|---|
+| Video | H.264 de la PS5 sin recomprimir, anunciado como `profile-level-id=4d001f`. El navegador lo decodifica a 60 cuadros por segundo |
+| Colchón del navegador | 8 ms con `jitterBufferTarget = 0` |
+| Decodificación | 1,3 a 2,1 ms por cuadro |
+| Pérdida | 0 paquetes |
+| Mando | X enviada por el DataChannel `pad` con un mando simulado: la consola cerró el diálogo |
+
+Falta: medir con cámara lenta (Fase 0 y Fase 2), probar desde otro computador de la red, con un mando real y con un juego en movimiento.
 ## ADR-002: Passthrough H.264 vs recompresión (pendiente de Fase 2)
 
 ## ADR-003: Modo espectador

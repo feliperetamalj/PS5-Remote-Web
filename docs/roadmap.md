@@ -7,7 +7,7 @@ Hay una compuerta después de las Fases 0 y 2: si los números de latencia no da
 | F-1 | Repo, Homebrew y dependencias | Hecho (falta la URL del repo) |
 | F0 | Línea base: TV directa contra chiaki-ng a 1080p60 y 720p60 | Pendiente (necesita a Felipe) |
 | F1 | Spike de libchiaki: guardar `.h264` y apretar X por script | Hecho (resultados en `decisiones.md`) |
-| F2 | WebRTC en LAN: video y audio sin recomprimir, mando por DataChannel | Pendiente |
+| F2 | WebRTC en LAN: video y audio sin recomprimir, mando por DataChannel | Funciona en este Mac; falta medir latencia y probar desde otro equipo con mando real |
 | F3 | Web app: cuentas, reservas, fila, admin y pantalla de juego | Hecho, sin streaming real |
 | F4 | Integración `web/` ↔ `media/`: turnos, corte al vencer, estadísticas | Pendiente |
 | F4b | Modo espectador (ADR-003) | Pendiente |

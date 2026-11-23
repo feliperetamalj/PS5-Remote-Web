@@ -28,10 +28,11 @@ Diseño: estilo "cosmic" (catálogo design-styles), componentes copiados de [mot
 ## Streaming (`media/`)
 
 ```bash
-git submodule update --init --recursive media/third_party/chiaki-ng
+git submodule update --init --recursive
 media/build.sh
 media/build/out/media discover 192.168.100.44   # estado de la PS5
 media/build/out/media register 192.168.100.44 <id-de-cuenta> <pin> ~/.config/ps5-stream/ps5.json
+media/build/out/media serve ~/.config/ps5-stream/ps5.json ~/.config/ps5-stream/media.sock 50000   # servidor de streaming
 media/build/out/media dump ~/.config/ps5-stream/ps5.json prueba.h264 10 --press-x   # y luego: ffplay prueba.h264
 ```
 

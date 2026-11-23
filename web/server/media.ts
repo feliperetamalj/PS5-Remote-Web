@@ -2,7 +2,8 @@
 import { connect } from 'node:net'
 
 export type MediaRequest =
-  | { op: 'start'; sdp: string; expires_at: number }
+  | { op: 'start'; expires_at: number } // responde con la oferta SDP del servidor
+  | { op: 'answer'; sdp: string }
   | { op: 'stop' }
   | { op: 'extend'; expires_at: number }
   | { op: 'status' }
@@ -15,7 +16,7 @@ export function mediaClient(socketPath: string): Media {
     const sock = connect(socketPath)
     let buf = ''
     const fail = (msg: string) => { sock.destroy(); reject(new Error(msg)) }
-    sock.setTimeout(8000, () => fail('El servidor de streaming no respondió a tiempo'))
+    sock.setTimeout(25_000, () => fail('El servidor de streaming no respondió a tiempo'))
     sock.on('error', () => fail('El servidor de streaming no está corriendo'))
     sock.on('connect', () => sock.write(JSON.stringify(req) + '\n'))
     sock.on('data', (d) => {

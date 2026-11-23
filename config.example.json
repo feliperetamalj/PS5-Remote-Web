@@ -2,7 +2,7 @@
   "public_origin": "https://ps5.tudominio.cl",
   "port": 8080,
   "data_dir": "~/.local/share/ps5-stream",
-  "media_socket": "~/.local/share/ps5-stream/media.sock",
+  "media_socket": "~/.config/ps5-stream/media.sock",
   "ps5": {
     "host": "192.168.1.50",
     "regist_key": "PEGAR_AQUI_SOLO_EN_CONFIG_LOCAL",

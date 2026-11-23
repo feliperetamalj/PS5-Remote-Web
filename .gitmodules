@@ -1,3 +1,6 @@
 [submodule "media/third_party/chiaki-ng"]
 	path = media/third_party/chiaki-ng
 	url = https://github.com/chiaki-ng/chiaki-ng.git
+[submodule "media/third_party/libdatachannel"]
+	path = media/third_party/libdatachannel
+	url = https://github.com/paullouisageneau/libdatachannel.git

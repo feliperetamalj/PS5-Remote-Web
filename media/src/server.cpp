@@ -1,0 +1,445 @@
+// media serve: sesión de Remote Play (libchiaki) ↔ un peer WebRTC (libdatachannel).
+// El video H.264 y el audio Opus se reenvían tal cual, sin decodificar ni recomprimir.
+// Solo web/ habla con este proceso, por un socket unix 0600 con una petición JSON por línea.
+#include <rtc/rtc.hpp>
+#include <nlohmann/json.hpp>
+
+#include <chiaki/controller.h>
+#include <chiaki/discovery.h>
+#include <chiaki/log.h>
+#include <chiaki/session.h>
+
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <fstream>
+#include <future>
+#include <iostream>
+#include <mutex>
+#include <shared_mutex>
+#include <thread>
+
+using json = nlohmann::json;
+using Clock = std::chrono::steady_clock;
+using namespace std::chrono_literals;
+
+// Lo que un jugador puede apretar. PS abre el menú del sistema y SHARE es el botón Create:
+// ninguno de los dos pasa, venga lo que venga del navegador.
+static const uint32_t ALLOWED_BUTTONS = 0xFFFF & ~(CHIAKI_CONTROLLER_BUTTON_PS | CHIAKI_CONTROLLER_BUTTON_SHARE);
+static const auto PAD_TIMEOUT = 500ms; // sin paquetes del mando → todo suelto
+static const auto IDR_MIN_GAP = 500ms; // tope a los pedidos de cuadro clave
+
+struct Peer {
+	std::shared_ptr<rtc::PeerConnection> pc;
+	std::shared_ptr<rtc::Track> video, audio;
+	std::shared_ptr<rtc::DataChannel> pad;
+	std::mutex pad_mu;
+	uint16_t last_seq = 0;
+	bool have_seq = false, neutral = true;
+	Clock::time_point last_pad = Clock::now();
+};
+
+static ChiakiLog ps5_log;
+static std::string ps5_host, ps5_regist_key;
+static uint8_t ps5_morning[16];
+static uint16_t udp_port;
+
+static ChiakiSession session;
+static std::shared_mutex session_mu; // compartido: usar la sesión · exclusivo: crearla o destruirla
+static bool session_alive = false;
+static std::atomic<bool> ps5_connected{false}, ps5_quit{false};
+static std::string ps5_quit_reason;
+
+static std::mutex peer_mu;
+static std::shared_ptr<Peer> peer;
+static rtc::binary video_header; // SPS/PPS: la PS5 lo manda una sola vez, al empezar
+static std::atomic<int64_t> expires_at{0}; // ms desde 1970; 0 = sin turno
+static std::atomic<int64_t> last_idr_ms{0};
+static std::atomic<uint64_t> audio_packets{0};
+static const Clock::time_point t0 = Clock::now();
+
+static int64_t now_ms() {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+static std::shared_ptr<Peer> current_peer() {
+	std::lock_guard<std::mutex> l(peer_mu);
+	return peer;
+}
+
+static void set_controller(const ChiakiControllerState &st) {
+	std::shared_lock<std::shared_mutex> l(session_mu);
+	if(session_alive)
+		chiaki_session_set_controller_state(&session, const_cast<ChiakiControllerState *>(&st));
+}
+static void release_controller() {
+	ChiakiControllerState st;
+	chiaki_controller_state_set_idle(&st);
+	set_controller(st);
+}
+static void request_idr() {
+	int64_t t = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+	int64_t last = last_idr_ms.load();
+	if(t - last < IDR_MIN_GAP.count() && last != 0)
+		return;
+	last_idr_ms = t;
+	std::shared_lock<std::shared_mutex> l(session_mu);
+	if(session_alive)
+		chiaki_session_request_idr(&session);
+}
+
+// ── chiaki → WebRTC ──────────────────────────────────────────────────────────
+static bool has_nal(const uint8_t *b, size_t n, int type) {
+	for(size_t i = 0; i + 3 < n; i++)
+		if(b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1 && (b[i + 3] & 0x1f) == type)
+			return true;
+	return false;
+}
+
+// Hilo de red de chiaki: no bloquear. sendFrame solo encola en el transporte.
+static bool on_video(uint8_t *buf, size_t size, int32_t, bool, void *) {
+	bool idr = has_nal(buf, size, 5);
+	if(!idr && has_nal(buf, size, 7)) { // cabecera suelta (SPS/PPS)
+		std::lock_guard<std::mutex> l(peer_mu);
+		video_header.assign(reinterpret_cast<const std::byte *>(buf), reinterpret_cast<const std::byte *>(buf) + size);
+		return true;
+	}
+	auto p = current_peer();
+	if(!p || !p->video->isOpen())
+		return true;
+	auto ts = std::chrono::duration<double>(Clock::now() - t0);
+	try {
+		if(idr) { // el navegador necesita SPS/PPS junto a cada cuadro clave
+			rtc::binary frame;
+			{
+				std::lock_guard<std::mutex> l(peer_mu);
+				frame = video_header;
+			}
+			frame.insert(frame.end(), reinterpret_cast<const std::byte *>(buf), reinterpret_cast<const std::byte *>(buf) + size);
+			p->video->sendFrame(std::move(frame), ts);
+		} else {
+			p->video->sendFrame(reinterpret_cast<const std::byte *>(buf), size, ts);
+		}
+	} catch(const std::exception &) {
+	}
+	return true;
+}
+
+static void on_audio_header(ChiakiAudioHeader *h, void *) {
+	if(h->rate != 48000 || h->frame_size != 480)
+		std::cerr << "audio inesperado: " << h->rate << " Hz, " << h->frame_size << " muestras" << std::endl;
+}
+static void on_audio_frame(uint8_t *buf, size_t size, void *) {
+	uint64_t n = audio_packets++;
+	auto p = current_peer();
+	if(!p || !p->audio->isOpen())
+		return;
+	try {
+		p->audio->sendFrame(reinterpret_cast<const std::byte *>(buf), size, rtc::FrameInfo(uint32_t(n * 480)));
+	} catch(const std::exception &) {
+	}
+}
+
+static void on_event(ChiakiEvent *e, void *) {
+	if(e->type == CHIAKI_EVENT_CONNECTED)
+		ps5_connected = true;
+	else if(e->type == CHIAKI_EVENT_QUIT) {
+		ps5_quit_reason = chiaki_quit_reason_string(e->quit.reason);
+		ps5_connected = false;
+		ps5_quit = true;
+	}
+}
+
+// ── sesión con la PS5 ────────────────────────────────────────────────────────
+static void session_close() {
+	{
+		std::unique_lock<std::shared_mutex> l(session_mu);
+		if(!session_alive)
+			return;
+		session_alive = false;
+	}
+	chiaki_session_stop(&session);
+	chiaki_session_join(&session);
+	chiaki_session_fini(&session);
+	ps5_connected = false;
+}
+
+static std::string session_open() {
+	if(ps5_quit)
+		session_close(); // la consola cortó: se limpia y se vuelve a conectar
+	{
+		std::shared_lock<std::shared_mutex> l(session_mu);
+		if(session_alive && ps5_connected)
+			return "";
+	}
+	session_close();
+	ps5_quit = false;
+
+	ChiakiConnectInfo info = {};
+	info.ps5 = true;
+	info.host = ps5_host.c_str();
+	strncpy(info.regist_key, ps5_regist_key.c_str(), sizeof(info.regist_key));
+	memcpy(info.morning, ps5_morning, sizeof(info.morning));
+	chiaki_connect_video_profile_preset(&info.video_profile, CHIAKI_VIDEO_RESOLUTION_PRESET_1080p, CHIAKI_VIDEO_FPS_PRESET_60);
+	info.video_profile.codec = CHIAKI_CODEC_H264;
+	info.enable_idr_on_fec_failure = true;
+
+	{
+		std::unique_lock<std::shared_mutex> l(session_mu);
+		if(chiaki_session_init(&session, &info, &ps5_log) != CHIAKI_ERR_SUCCESS)
+			return "No se pudo iniciar la sesión con la PS5";
+		static ChiakiAudioSink sink = {nullptr, on_audio_header, on_audio_frame};
+		chiaki_session_set_audio_sink(&session, &sink);
+		chiaki_session_set_video_sample_cb(&session, on_video, nullptr);
+		chiaki_session_set_event_cb(&session, on_event, nullptr);
+		chiaki_session_start(&session);
+		session_alive = true;
+	}
+	for(int i = 0; i < 150 && !ps5_connected && !ps5_quit; i++)
+		std::this_thread::sleep_for(100ms);
+	if(ps5_connected)
+		return "";
+	std::string why = ps5_quit ? ps5_quit_reason : "sin respuesta en 15 s";
+	session_close();
+	return "La PS5 no aceptó la conexión (" + why + "). Si está en reposo, despiértala.";
+}
+
+// ── peer WebRTC ──────────────────────────────────────────────────────────────
+static void peer_close() {
+	std::shared_ptr<Peer> old;
+	{
+		std::lock_guard<std::mutex> l(peer_mu);
+		old.swap(peer);
+	}
+	release_controller();
+	if(old)
+		old->pc->close();
+}
+
+static void on_pad(const std::shared_ptr<Peer> &p, const rtc::binary &m) {
+	if(m.size() != 16) // formato fijo: cualquier otra cosa se descarta
+		return;
+	auto b = reinterpret_cast<const uint8_t *>(m.data());
+	auto u16 = [&](int i) { return uint16_t(b[i] | (b[i + 1] << 8)); };
+	uint16_t seq = u16(0);
+	ChiakiControllerState st;
+	chiaki_controller_state_set_idle(&st);
+	st.buttons = (uint32_t(b[2]) | (uint32_t(b[3]) << 8) | (uint32_t(b[4]) << 16) | (uint32_t(b[5]) << 24)) & ALLOWED_BUTTONS;
+	st.left_x = int16_t(u16(6));
+	st.left_y = int16_t(u16(8));
+	st.right_x = int16_t(u16(10));
+	st.right_y = int16_t(u16(12));
+	st.l2_state = b[14];
+	st.r2_state = b[15];
+	{
+		std::lock_guard<std::mutex> l(p->pad_mu);
+		if(p->have_seq && int16_t(seq - p->last_seq) <= 0) // llegó tarde o repetido
+			return;
+		p->last_seq = seq;
+		p->have_seq = true;
+		p->last_pad = Clock::now();
+		p->neutral = false;
+	}
+	set_controller(st);
+}
+
+static json op_start(const json &req) {
+	std::string err = session_open();
+	if(!err.empty())
+		return {{"error", err}};
+	peer_close();
+	expires_at = req.value("expires_at", int64_t(0));
+
+	rtc::Configuration config;
+	config.portRangeBegin = config.portRangeEnd = udp_port; // un solo puerto UDP para abrir en el router
+	config.enableIceUdpMux = true;
+	auto p = std::make_shared<Peer>();
+	p->pc = std::make_shared<rtc::PeerConnection>(config);
+	std::weak_ptr<Peer> wp = p;
+
+	auto gathered = std::make_shared<std::promise<void>>();
+	auto gathered_once = std::make_shared<std::once_flag>();
+	p->pc->onGatheringStateChange([gathered, gathered_once](rtc::PeerConnection::GatheringState s) {
+		if(s == rtc::PeerConnection::GatheringState::Complete)
+			std::call_once(*gathered_once, [&] { gathered->set_value(); });
+	});
+	p->pc->onStateChange([wp](rtc::PeerConnection::State s) {
+		using S = rtc::PeerConnection::State;
+		if(s == S::Disconnected || s == S::Failed || s == S::Closed)
+			release_controller(); // se cayó el jugador: nada queda apretado
+	});
+
+	// Video: H.264 Annex-B → RTP. Perfil Main, que es lo que entrega la PS5.
+	rtc::Description::Video video("video", rtc::Description::Direction::SendOnly);
+	video.addH264Codec(96, "profile-level-id=4d001f;packetization-mode=1;level-asymmetry-allowed=1");
+	video.addSSRC(1, "ps5", "ps5-video", "video");
+	p->video = p->pc->addTrack(video);
+	auto vcfg = std::make_shared<rtc::RtpPacketizationConfig>(1, "ps5", 96, rtc::H264RtpPacketizer::ClockRate);
+	auto vpack = std::make_shared<rtc::H264RtpPacketizer>(rtc::NalUnit::Separator::StartSequence, vcfg);
+	vpack->addToChain(std::make_shared<rtc::RtcpSrReporter>(vcfg));
+	vpack->addToChain(std::make_shared<rtc::RtcpNackResponder>());
+	vpack->addToChain(std::make_shared<rtc::PliHandler>([] { request_idr(); })); // el navegador pide cuadro clave → se lo pedimos a la PS5
+	p->video->setMediaHandler(vpack);
+	p->video->onOpen([] { last_idr_ms = 0; request_idr(); }); // el que entra necesita partir de un cuadro clave
+
+	// Audio: Opus tal cual. msid distinto al del video: el navegador no sincroniza labios y no retrasa el video.
+	rtc::Description::Audio audio("audio", rtc::Description::Direction::SendOnly);
+	audio.addOpusCodec(111);
+	audio.addSSRC(2, "ps5", "ps5-audio", "audio");
+	p->audio = p->pc->addTrack(audio);
+	auto acfg = std::make_shared<rtc::RtpPacketizationConfig>(2, "ps5", 111, rtc::OpusRtpPacketizer::DefaultClockRate);
+	auto apack = std::make_shared<rtc::OpusRtpPacketizer>(acfg);
+	apack->addToChain(std::make_shared<rtc::RtcpSrReporter>(acfg));
+	p->audio->setMediaHandler(apack);
+
+	// Mando: sin orden ni reintentos. El canal lo crea el servidor; los que abra el navegador se ignoran.
+	rtc::DataChannelInit init;
+	init.reliability.unordered = true;
+	init.reliability.maxRetransmits = 0;
+	p->pad = p->pc->createDataChannel("pad", init);
+	p->pad->onMessage([wp](rtc::binary m) { if(auto p = wp.lock()) on_pad(p, m); }, [](std::string) {});
+
+	p->pc->setLocalDescription();
+	if(gathered->get_future().wait_for(5s) != std::future_status::ready)
+		return {{"error", "No se pudieron reunir los candidatos de red"}};
+	auto local = p->pc->localDescription();
+	if(!local)
+		return {{"error", "Sin descripción local"}};
+	{
+		std::lock_guard<std::mutex> l(peer_mu);
+		peer = p;
+	}
+	return {{"sdp", std::string(*local)}};
+}
+
+static json op_answer(const json &req) {
+	auto p = current_peer();
+	if(!p)
+		return {{"error", "No hay conexión en curso"}};
+	p->pc->setRemoteDescription(rtc::Description(req.at("sdp").get<std::string>(), "answer"));
+	return {{"ok", true}};
+}
+
+static json handle(const json &req) {
+	std::string op = req.value("op", "");
+	if(op == "start")
+		return op_start(req);
+	if(op == "answer")
+		return op_answer(req);
+	if(op == "stop") {
+		expires_at = 0;
+		peer_close();
+		session_close(); // libera la consola para Felipe
+		return {{"ok", true}};
+	}
+	if(op == "extend") {
+		expires_at = req.value("expires_at", int64_t(0));
+		return {{"ok", true}};
+	}
+	if(op == "status") {
+		auto p = current_peer();
+		return {{"ps5", ps5_connected ? "connected" : "idle"}, {"peer", p ? int(p->pc->state()) : -1}, {"expires_at", expires_at.load()}};
+	}
+	if(op == "wake") {
+		uint64_t credential = strtoull(ps5_regist_key.c_str(), nullptr, 16);
+		ChiakiErrorCode e = chiaki_discovery_wakeup(&ps5_log, nullptr, ps5_host.c_str(), credential, true);
+		if(e != CHIAKI_ERR_SUCCESS)
+			return {{"error", std::string("No se pudo despertar la PS5: ") + chiaki_error_string(e)}};
+		return {{"ok", true}};
+	}
+	if(op == "button" && req.value("button", "") == "PS") { // solo lo manda el admin, desde el panel
+		ChiakiControllerState st;
+		chiaki_controller_state_set_idle(&st);
+		st.buttons = CHIAKI_CONTROLLER_BUTTON_PS;
+		set_controller(st);
+		std::this_thread::sleep_for(100ms);
+		release_controller();
+		return {{"ok", true}};
+	}
+	return {{"error", "Operación desconocida"}};
+}
+
+// Vigilante: suelta el mando si el jugador calla y corta al vencer el turno aunque web/ no avise.
+static void watchdog() {
+	for(;;) {
+		std::this_thread::sleep_for(50ms);
+		if(auto p = current_peer()) {
+			bool release = false;
+			{
+				std::lock_guard<std::mutex> l(p->pad_mu);
+				if(!p->neutral && Clock::now() - p->last_pad > PAD_TIMEOUT)
+					release = p->neutral = true;
+			}
+			if(release)
+				release_controller();
+		}
+		int64_t exp = expires_at.load();
+		if(exp && now_ms() >= exp) {
+			expires_at = 0;
+			peer_close();
+			session_close();
+		}
+	}
+}
+
+extern "C" int serve_main(const char *keys_path, const char *socket_path, int port) {
+	try {
+		json keys = json::parse(std::ifstream(keys_path));
+		ps5_host = keys.at("host").get<std::string>();
+		ps5_regist_key = keys.at("regist_key").get<std::string>();
+		std::string morning = keys.at("morning").get<std::string>();
+		if(morning.size() != 32)
+			throw std::runtime_error("morning inválido");
+		for(int i = 0; i < 16; i++)
+			ps5_morning[i] = uint8_t(std::stoi(morning.substr(2 * i, 2), nullptr, 16));
+	} catch(const std::exception &e) {
+		std::cerr << "Archivo de claves inválido (" << keys_path << "): " << e.what() << std::endl;
+		return 1;
+	}
+	udp_port = uint16_t(port);
+	chiaki_log_init(&ps5_log, CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING, chiaki_log_cb_print, nullptr);
+	if(chiaki_lib_init() != CHIAKI_ERR_SUCCESS)
+		return 1;
+	rtc::InitLogger(rtc::LogLevel::Warning);
+
+	sockaddr_un addr = {};
+	addr.sun_family = AF_UNIX;
+	if(strlen(socket_path) >= sizeof(addr.sun_path)) {
+		std::cerr << "Ruta de socket demasiado larga" << std::endl;
+		return 1;
+	}
+	strcpy(addr.sun_path, socket_path);
+	unlink(socket_path);
+	umask(0077); // el socket nace 0600: solo el mismo usuario (web/) puede hablarle
+	int srv = socket(AF_UNIX, SOCK_STREAM, 0);
+	if(srv < 0 || bind(srv, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0 || listen(srv, 4) < 0) {
+		perror(socket_path);
+		return 1;
+	}
+	std::thread(watchdog).detach();
+	std::cout << "media escuchando en " << socket_path << " · PS5 " << ps5_host << " · UDP " << udp_port << std::endl;
+
+	for(;;) {
+		int c = accept(srv, nullptr, nullptr);
+		if(c < 0)
+			continue;
+		std::string line;
+		char buf[4096];
+		ssize_t n;
+		while(line.find('\n') == std::string::npos && line.size() < 64 * 1024 && (n = read(c, buf, sizeof(buf))) > 0)
+			line.append(buf, size_t(n));
+		json res;
+		try {
+			res = handle(json::parse(line));
+		} catch(const std::exception &e) {
+			res = {{"error", std::string("Petición inválida: ") + e.what()}};
+		}
+		std::string out = res.dump() + "\n";
+		(void)!write(c, out.data(), out.size());
+		close(c);
+	}
+}

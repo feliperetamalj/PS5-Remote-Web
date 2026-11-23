@@ -16,7 +16,7 @@ function setup() {
   const calls: string[] = []
   const { app, sweep } = createApp({
     db, origin: ORIGIN, now: () => clock.t,
-    media: async (r) => { calls.push(r.op); return { sdp: 'v=0 answer' } },
+    media: async (r) => { calls.push(r.op); return { sdp: 'v=0 oferta del servidor' } },
   })
   const user = (name: string, status = 'approved', role = 'user') =>
     Number(db.prepare('INSERT INTO users(email, name, pass_hash, role, status, created_at) VALUES(?, ?, ?, ?, ?, ?)')
@@ -142,17 +142,20 @@ test('API: registro pendiente, aprobación, juego y corte al vencer', async () =
 
   const { body: booking } = await ana('POST', '/bookings', { start_at: slot })
   clock.t = slot + 1000
-  assert.equal((await ana('POST', '/play/offer', { sdp: 'v=0 oferta de prueba' })).status, 403) // sin confirmar no juega
+  assert.equal((await ana('POST', '/play/offer', {})).status, 403) // sin confirmar no juega
   clock.t = T0 + 60_000
   assert.equal((await felipe('POST', `/admin/bookings/${booking.id}`, { status: 'confirmed' })).status, 200)
   const cal = (await ana('GET', '/calendar')).body
   assert.equal(cal.days[0].slots.find((s: any) => s.start_at === slot).mine.status, 'confirmed')
 
-  assert.equal((await ana('POST', '/play/offer', { sdp: 'v=0 oferta de prueba' })).status, 403) // todavía no empieza su hora
+  assert.equal((await ana('POST', '/play/offer', {})).status, 403) // todavía no empieza su hora
   clock.t = slot + 1000
-  assert.equal((await felipe('POST', '/play/offer', { sdp: 'v=0 oferta de prueba' })).status, 403) // ni el admin entra en turno ajeno
-  const play = await ana('POST', '/play/offer', { sdp: 'v=0 oferta de prueba' })
+  assert.equal((await felipe('POST', '/play/offer', {})).status, 403) // ni el admin entra en turno ajeno
+  const play = await ana('POST', '/play/offer', {})
   assert.deepEqual([play.status, play.body.ends_at], [200, slot + HOUR])
+  assert.equal((await felipe('POST', '/play/answer', { sdp: 'v=0 respuesta ajena' })).status, 409) // solo quien juega responde
+  assert.equal((await ana('POST', '/play/answer', { sdp: 'basura' })).status, 400)
+  assert.equal((await ana('POST', '/play/answer', { sdp: 'v=0 respuesta del navegador' })).status, 200)
   assert.equal((await ana('POST', '/play/stats', { rtt_ms: 10, loss_pct: 0, jitter_ms: 2, decode_ms: 4 })).status, 200)
   assert.equal((await ana('POST', '/play/stats', { rtt_ms: 20, loss_pct: 0, jitter_ms: 2, decode_ms: 4 })).status, 200)
   assert.equal((await felipe('GET', '/admin/overview')).body.turn.live.rtt_ms, 15)
@@ -160,9 +163,9 @@ test('API: registro pendiente, aprobación, juego y corte al vencer', async () =
   // Vence la hora: el barrido corta el stream.
   clock.t = slot + HOUR + 1
   await sweep()
-  assert.deepEqual(calls.filter((c) => c !== 'status'), ['start', 'stop'])
+  assert.deepEqual(calls.filter((c) => c !== 'status'), ['start', 'answer', 'stop'])
   assert.equal((await ana('POST', '/play/stats', { rtt_ms: 1 })).status, 409)
-  assert.equal((await ana('POST', '/play/offer', { sdp: 'v=0 oferta de prueba' })).status, 403)
+  assert.equal((await ana('POST', '/play/offer', {})).status, 403)
 
   // Bloquear cierra sus sesiones.
   await felipe('POST', `/admin/users/${anaId}`, { status: 'blocked' })
