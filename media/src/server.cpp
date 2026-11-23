@@ -17,6 +17,8 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <csignal>
 #include <chrono>
 #include <cstring>
@@ -40,6 +42,7 @@ static const auto PAD_TIMEOUT = 500ms; // sin paquetes del mando → todo suelto
 static const auto IDR_MIN_GAP = 500ms; // tope a los pedidos de cuadro clave
 static const size_t MAX_WATCHERS = 4; // espectadores a la vez
 static const auto WATCH_IDR_GAP = 3s; // entre todos los espectadores, un cuadro clave cada 3 s: no degradan al jugador
+static const size_t WATCH_QUEUE_MAX = 240; // cuadros en espera para los espectadores (~2 s); si se llena, se bota
 static const auto WATCH_CONNECT_TIMEOUT = 20s; // un espectador que no termina de conectar libera su cupo
 
 struct Peer {
@@ -91,15 +94,33 @@ static std::shared_ptr<Peer> current_peer() {
 	std::lock_guard<std::mutex> l(peer_mu);
 	return peer;
 }
-/** A quién se le manda cada cuadro: el jugador primero y después los espectadores. */
-static std::vector<std::shared_ptr<Peer>> current_targets() {
-	std::vector<std::shared_ptr<Peer>> out;
-	std::lock_guard<std::mutex> l(peer_mu);
-	if(peer)
-		out.push_back(peer);
-	if(watcher_count.load())
-		out.insert(out.end(), watchers.begin(), watchers.end());
-	return out;
+
+// Los espectadores no viajan por el hilo de red de chiaki: ese hilo solo copia el cuadro a esta cola y sigue
+// con el jugador. Empaquetar, cifrar y enviar a cada espectador lo hace watch_sender, en su propio hilo.
+struct WatchFrame {
+	bool video;
+	rtc::binary data;
+	double video_ts;
+	uint32_t audio_ts;
+};
+static std::mutex watch_mu;
+static std::condition_variable watch_cv;
+static std::deque<WatchFrame> watch_queue;
+static void request_watch_idr();
+
+static void watch_enqueue(bool video, const std::byte *data, size_t size, double video_ts, uint32_t audio_ts) {
+	bool overflow = false;
+	{
+		std::lock_guard<std::mutex> l(watch_mu);
+		if(watch_queue.size() >= WATCH_QUEUE_MAX) { // el hilo de espectadores no da abasto: se bota todo, nunca se frena al jugador
+			watch_queue.clear();
+			overflow = true;
+		}
+		watch_queue.push_back({video, rtc::binary(data, data + size), video_ts, audio_ts});
+	}
+	watch_cv.notify_one();
+	if(overflow)
+		request_watch_idr(); // tras botar cuadros hay que volver a partir de un cuadro clave
 }
 
 static void set_controller(const ChiakiControllerState &st) {
@@ -150,29 +171,31 @@ static bool on_video(uint8_t *buf, size_t size, int32_t, bool, void *) {
 		video_header.assign(reinterpret_cast<const std::byte *>(buf), reinterpret_cast<const std::byte *>(buf) + size);
 		return true;
 	}
-	auto targets = current_targets();
-	if(targets.empty())
+	auto p = current_peer();
+	bool to_player = p && p->video->isOpen();
+	bool watched = watcher_count.load() > 0;
+	if(!to_player && !watched)
 		return true;
 	auto ts = std::chrono::duration<double>(Clock::now() - t0);
+	auto data = reinterpret_cast<const std::byte *>(buf);
 	rtc::binary frame;
 	if(idr) { // el navegador necesita SPS/PPS junto a cada cuadro clave
 		{
 			std::lock_guard<std::mutex> l(peer_mu);
 			frame = video_header;
 		}
-		frame.insert(frame.end(), reinterpret_cast<const std::byte *>(buf), reinterpret_cast<const std::byte *>(buf) + size);
+		frame.insert(frame.end(), data, data + size);
+		data = frame.data();
+		size = frame.size();
 	}
-	for(auto &p : targets) {
-		if(!p->video->isOpen())
-			continue;
+	if(to_player) { // el jugador siempre primero
 		try {
-			if(idr)
-				p->video->sendFrame(frame, ts);
-			else
-				p->video->sendFrame(reinterpret_cast<const std::byte *>(buf), size, ts);
+			p->video->sendFrame(data, size, ts);
 		} catch(const std::exception &) {
 		}
 	}
+	if(watched)
+		watch_enqueue(true, data, size, ts.count(), 0);
 	return true;
 }
 
@@ -182,12 +205,44 @@ static void on_audio_header(ChiakiAudioHeader *h, void *) {
 }
 static void on_audio_frame(uint8_t *buf, size_t size, void *) {
 	uint64_t n = audio_packets++;
-	for(auto &p : current_targets()) {
-		if(!p->audio->isOpen())
-			continue;
+	auto data = reinterpret_cast<const std::byte *>(buf);
+	auto p = current_peer();
+	if(p && p->audio->isOpen()) {
 		try {
-			p->audio->sendFrame(reinterpret_cast<const std::byte *>(buf), size, rtc::FrameInfo(uint32_t(n * 480)));
+			p->audio->sendFrame(data, size, rtc::FrameInfo(uint32_t(n * 480)));
 		} catch(const std::exception &) {
+		}
+	}
+	if(watcher_count.load())
+		watch_enqueue(false, data, size, 0, uint32_t(n * 480));
+}
+
+/** Hilo de los espectadores: saca cuadros de la cola y los envía a cada uno. */
+static void watch_sender() {
+	for(;;) {
+		WatchFrame f;
+		{
+			std::unique_lock<std::mutex> l(watch_mu);
+			watch_cv.wait(l, [] { return !watch_queue.empty(); });
+			f = std::move(watch_queue.front());
+			watch_queue.pop_front();
+		}
+		std::vector<std::shared_ptr<Peer>> ws;
+		{
+			std::lock_guard<std::mutex> l(peer_mu);
+			ws = watchers;
+		}
+		for(auto &w : ws) {
+			auto &track = f.video ? w->video : w->audio;
+			if(!track->isOpen())
+				continue;
+			try {
+				if(f.video)
+					track->sendFrame(f.data.data(), f.data.size(), std::chrono::duration<double>(f.video_ts));
+				else
+					track->sendFrame(f.data.data(), f.data.size(), rtc::FrameInfo(f.audio_ts));
+			} catch(const std::exception &) {
+			}
 		}
 	}
 }
@@ -657,6 +712,7 @@ extern "C" int serve_main(const char *keys_path, const char *socket_path, int po
 		return 1;
 	}
 	std::thread(watchdog).detach();
+	std::thread(watch_sender).detach();
 	std::cout << "media escuchando en " << socket_path << " · PS5 " << ps5_host << " · UDP " << udp_port
 		<< (public_ip.empty() ? " · modo red local" : " · público " + public_ip + ":" + std::to_string(public_port)) << std::endl;
 

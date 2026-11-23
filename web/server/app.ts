@@ -176,20 +176,24 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
     const user = c.get('user')
     if (!user) return c.json({ user: null })
     const t = await sweep()
-    const queue = q<{ id: number; user_id: number; status: string }>(
-      "SELECT id, user_id, status FROM bookings WHERE kind = 'queue' AND status IN ('requested','confirmed') AND started_at IS NULL ORDER BY created_at, id")
+    const queue = q<{ id: number; user_id: number; status: string; name: string }>(
+      "SELECT b.id, b.user_id, b.status, u.name FROM bookings b JOIN users u ON u.id = b.user_id WHERE b.kind = 'queue' AND b.status IN ('requested','confirmed') AND b.started_at IS NULL ORDER BY b.created_at, b.id")
     const approved = queue.filter((e) => e.status === 'confirmed')
     const mine = queue.find((e) => e.user_id === user.id)
     // Hay algo que mirar solo mientras alguien está conectado a la consola.
-    const watching = live ? Number((await media({ op: 'status' }).catch(() => ({} as Record<string, unknown>))).watchers ?? 0) : 0
+    // Si media es una versión sin modo espectador, su estado no trae "watchers" y el botón de mirar no se ofrece.
+    const st = live ? await media({ op: 'status' }).catch(() => ({} as Record<string, unknown>)) : {} as Record<string, unknown>
+    const names = user.status === 'approved' // los nombres solo los ven las cuentas aprobadas
     return c.json({
       now: now(),
       user,
       turn: t && { mine: t.user_id === user.id, state: t.state, kind: t.kind, ends_at: t.ends_at },
-      live: !!live,
-      watching,
+      live: !!live && st.watchers !== undefined,
+      watching: Number(st.watchers ?? 0),
       queue: {
         length: approved.length,
+        // Quiénes están en la fila, en orden: primero los aprobados (con su puesto) y después los que esperan aprobación.
+        people: names ? [...approved, ...queue.filter((e) => e.status !== 'confirmed')].map((e) => ({ name: e.name, status: e.status, me: e.user_id === user.id })) : [],
         mine: mine ? { id: mine.id, status: mine.status, position: approved.findIndex((e) => e.id === mine.id) + 1 } : null,
       },
     })
@@ -203,8 +207,9 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
     const s = turns.getSettings(db)
     const first = Math.floor(t / HOUR) * HOUR
     const last = first + s.horizon_days * 24 * HOUR
-    const rows = q<{ id: number; user_id: number; start_at: number; status: string }>(
-      "SELECT id, user_id, start_at, status FROM bookings WHERE kind = 'slot' AND status IN ('requested','confirmed') AND start_at BETWEEN ? AND ? ORDER BY created_at, id", first, last)
+    const rows = q<{ id: number; user_id: number; start_at: number; status: string; name: string }>(
+      "SELECT b.id, b.user_id, b.start_at, b.status, u.name FROM bookings b JOIN users u ON u.id = b.user_id WHERE b.kind = 'slot' AND b.status IN ('requested','confirmed') AND b.start_at BETWEEN ? AND ? ORDER BY b.created_at, b.id", first, last)
+    const names = user.status === 'approved' // los nombres solo los ven las cuentas aprobadas
     const days: { date: string; slots: object[] }[] = []
     for (let at = first; at <= last; at += HOUR) {
       if (!turns.isOpen(s, at)) continue
@@ -216,7 +221,9 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
       days.at(-1)!.slots.push({
         start_at: at, hour,
         taken: here.some((r) => r.status === 'confirmed'),
+        by: names ? here.find((r) => r.status === 'confirmed')?.name ?? null : null, // quién tiene la reserva confirmada
         waiting: waiting.length,
+        waiting_names: names ? waiting.map((r) => r.name) : [],
         mine: mine ? { id: mine.id, status: mine.status, position: waiting.findIndex((r) => r.id === mine.id) + 1 } : null,
       })
     }

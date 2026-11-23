@@ -18,7 +18,7 @@ export type AppState = {
   turn: { mine: boolean; state: 'active' | 'offered'; kind: 'slot' | 'queue'; ends_at: number } | null
   live: boolean // hay alguien conectado a la consola: se puede mirar
   watching: number // espectadores conectados
-  queue: { length: number; mine: { id: number; status: 'requested' | 'confirmed'; position: number } | null }
+  queue: { length: number; people: { name: string; status: 'requested' | 'confirmed'; me: boolean }[]; mine: { id: number; status: 'requested' | 'confirmed'; position: number } | null }
 }
 
 function useHash() {

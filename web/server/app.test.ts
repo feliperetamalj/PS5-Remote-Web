@@ -147,6 +147,16 @@ test('API: registro pendiente, aprobación, juego y corte al vencer', async () =
   assert.equal((await felipe('POST', `/admin/bookings/${booking.id}`, { status: 'confirmed' })).status, 200)
   const cal = (await ana('GET', '/calendar')).body
   assert.equal(cal.days[0].slots.find((s: any) => s.start_at === slot).mine.status, 'confirmed')
+  // El calendario muestra quién reservó, y la fila muestra a todos; una cuenta pendiente no ve nombres.
+  assert.equal((await felipe('GET', '/calendar')).body.days[0].slots.find((s: any) => s.start_at === slot).by, 'Ana')
+  const caro = client(app)
+  await caro('POST', '/signup', { email: 'caro@x.cl', name: 'Caro', password: 'clave-larga-3' })
+  assert.equal((await caro('GET', '/calendar')).body.days[0].slots.find((s: any) => s.start_at === slot).by, null)
+  const { body: inQueue } = await ana('POST', '/queue')
+  assert.deepEqual((await felipe('GET', '/state')).body.queue.people, [{ name: 'Ana', status: 'requested', me: false }])
+  assert.deepEqual((await ana('GET', '/state')).body.queue.people, [{ name: 'Ana', status: 'requested', me: true }])
+  assert.deepEqual((await caro('GET', '/state')).body.queue.people, [])
+  assert.equal((await ana('DELETE', `/bookings/${inQueue.id}`)).status, 200)
 
   assert.equal((await ana('POST', '/play/offer', {})).status, 403) // todavía no empieza su hora
   clock.t = slot + 1000

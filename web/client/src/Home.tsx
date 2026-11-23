@@ -5,7 +5,7 @@ import { Countdown, GlowLink, Trail } from './kit.tsx'
 import { Spotlight } from './motion/spotlight.tsx'
 import { api, usePoll, useNow, fmtDay, fmtLeft, ActionButton, Badge, Card, Empty } from './ui.tsx'
 
-type Slot = { start_at: number; hour: number; taken: boolean; waiting: number; mine: { id: number; status: 'requested' | 'confirmed'; position: number } | null }
+type Slot = { start_at: number; hour: number; taken: boolean; by: string | null; waiting: number; waiting_names: string[]; mine: { id: number; status: 'requested' | 'confirmed'; position: number } | null }
 type Calendar = { days: { date: string; slots: Slot[] }[]; rules: { max_hours_per_day: number; horizon_days: number } }
 
 export function Home({ state, reload }: { state: AppState; reload: () => void }) {
@@ -94,6 +94,20 @@ export function Home({ state, reload }: { state: AppState; reload: () => void })
             ) : (
               <ActionButton variant="primary" disabled={!approved || !!turn?.mine} run={() => api('POST', '/queue').then(refresh)}>Entrar a la fila</ActionButton>
             )}
+            {queue.people.length > 0 && (
+              <ol aria-label="Personas en la fila" className="mt-4 flex flex-col gap-1.5 border-t border-white/10 pt-4 text-sm">
+                {queue.people.map((p, i) => {
+                  const pos = p.status === 'confirmed' ? queue.people.slice(0, i + 1).filter((x) => x.status === 'confirmed').length : 0
+                  return (
+                    <li key={i} className="flex items-center gap-2">
+                      <span className="num w-7 text-muted">{pos ? `#${pos}` : '·'}</span>
+                      <span className={`mr-auto min-w-0 truncate ${p.me ? 'font-semibold' : ''}`}>{p.name}{p.me && ' (tú)'}</span>
+                      {!pos && <span className="text-xs text-muted">espera aprobación</span>}
+                    </li>
+                  )
+                })}
+              </ol>
+            )}
           </Card>
 
           <Card title="Antes de jugar">
@@ -119,9 +133,10 @@ function SlotRow({ slot: s, canBook, refresh }: { slot: Slot; canBook: boolean; 
       <span className="relative mr-auto flex flex-wrap gap-1.5">
         {s.mine?.status === 'confirmed' ? <Badge tone="ok">Confirmada</Badge>
           : s.mine ? <Badge tone="warn">{s.taken ? `En espera · #${s.mine.position}` : `Pedida · #${s.mine.position}`}</Badge>
-          : s.taken ? <Badge tone="danger">Ocupado</Badge>
+          : s.taken ? <Badge tone="danger">{s.by ? `Reservó ${s.by}` : 'Ocupado'}</Badge>
           : <Badge>Libre</Badge>}
-        {!s.mine && s.waiting > 0 && <Badge>{s.waiting} en espera</Badge>}
+        {!s.mine && s.waiting > 0 && <Badge>{s.waiting_names.length ? `${s.taken ? 'En espera' : 'Pidió'}: ${s.waiting_names.join(', ')}` : `${s.waiting} en espera`}</Badge>}
+        {s.mine && s.taken && s.mine.status !== 'confirmed' && s.by && <Badge>Reservó {s.by}</Badge>}
       </span>
       {s.mine
         ? <ActionButton variant="danger" aria-label={`Cancelar ${label}`} run={() => api('DELETE', `/bookings/${s.mine!.id}`).then(refresh)}>Cancelar</ActionButton>
