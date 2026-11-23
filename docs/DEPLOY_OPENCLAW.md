@@ -86,7 +86,21 @@ cd ~/ps5-remote-web/web
 PS5_CONFIG=~/.config/ps5-stream/config.json npm run admin:create -- <correo-de-felipe> "Felipe"
 ```
 
-### 7. Verificar
+### 7. Túnel de playit.gg
+
+Felipe ya creó en playit.gg un túnel de tipo **HTTPS** con el dominio `ps5remote.felipardo.cl`. A OpenClaw le toca dejarlo apuntando al servicio:
+
+- Destino local del túnel: `127.0.0.1`, puerto `8080`. Es el único puerto que se publica.
+- El túnel termina el HTTPS; `web` sigue hablando HTTP solo en `127.0.0.1`. No instalar certificados ni proxies en el Mac.
+- **No** crear un túnel para el puerto UDP 50000 ni para ningún otro: el video va directo por la red, nunca por playit.
+- No modificar los túneles que ya existan (por ejemplo, el de Minecraft).
+- `public_origin` en `config.json` debe ser exactamente `https://ps5remote.felipardo.cl`. Si no coincide, la página carga pero todo intento de entrar responde "Origen no permitido".
+
+Comprobación: `curl -sI https://ps5remote.felipardo.cl/api/health` responde `200` y trae la cabecera `content-security-policy`.
+
+Desde que este paso funciona, la página de acceso queda visible en internet. Jugar desde fuera de la casa todavía no funciona (falta abrir el UDP, etapa 2), pero las cuentas y el panel sí son alcanzables: por eso el paso 6 (admin con contraseña fuerte) va antes.
+
+### 8. Verificar
 
 ```bash
 ~/ps5-remote-web/deploy/ps5ctl.sh status
