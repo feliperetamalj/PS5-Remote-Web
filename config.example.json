@@ -1,12 +1,6 @@
 {
-  "public_origin": "https://ps5.tudominio.cl",
+  "public_origin": "https://ps5remote.felipardo.cl",
   "port": 8080,
   "data_dir": "~/.local/share/ps5-stream",
-  "media_socket": "~/.config/ps5-stream/media.sock",
-  "ps5": {
-    "host": "192.168.1.50",
-    "regist_key": "PEGAR_AQUI_SOLO_EN_CONFIG_LOCAL",
-    "morning": "PEGAR_AQUI_SOLO_EN_CONFIG_LOCAL"
-  },
-  "udp_port": 50000
+  "media_socket": "~/.config/ps5-stream/media.sock"
 }
