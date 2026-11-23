@@ -31,8 +31,25 @@ No se abre ningún puerto TCP en el router. No se expone SSH ni el panel de admi
 - Contraseñas con scrypt (`node:crypto`) y sal aleatoria. Mínimo 10 caracteres.
 - La sesión es un token aleatorio de 32 bytes. En la base de datos solo queda su SHA-256. Vence a los 14 días.
 - Los registros nuevos quedan `pending`. El admin se crea por CLI (`npm run admin:create`) y nunca desde la web.
-- Las respuestas de login no revelan si el email existe.
+- Las respuestas de login no revelan si el email existe. El registro sí avisa cuando un correo ya tiene cuenta: sin verificación por correo no hay forma limpia de evitarlo, y se acepta para un sitio entre conocidos.
+- **Riesgo aceptado por ahora:** los límites de intentos son globales y por correo, no por IP, porque detrás del túnel todas las visitas llegan desde `127.0.0.1`. Alguien que insista desde internet puede dejar bloqueado el inicio de sesión de todos durante 15 minutos (las sesiones ya abiertas siguen). Se corrige cuando se confirme qué cabecera entrega playit con la IP real.
+
+## Revisión de seguridad del 2026-11-22
+
+Revisión independiente del código de `web/server` y `media/src`. Encontró 2 defectos altos, 4 medios y 9 bajos; ninguno daba acceso al Mac ni permitía apretar PS o Create. Corregidos:
+
+- `media` moría por SIGPIPE si `web` colgaba antes de leer la respuesta; ahora se ignora la señal.
+- Carrera al abrir y cerrar la sesión con la PS5 justo en el cambio de turno; ahora hay un candado de ciclo de vida.
+- El turno se revalida después de cortar la conexión anterior, y el barrido compara también el usuario.
+- Al arrancar, `web` corta cualquier stream que haya quedado de antes y reintenta los cortes que fallen.
+- Devolver una cuenta a "pendiente" ahora también cancela sus reservas y su turno.
+- El control de `media` ya no se congela con un cliente lento; `start` y `extend` exigen un vencimiento válido; un `start` fallido suelta la consola.
+- El botón PS de emergencia del admin ya no lo pisa el mando del jugador.
+- Las ofertas de conexión se atienden en serie.
+
+Quedan abiertos los dos puntos marcados arriba como pendiente y riesgo aceptado.
 
 ## Privacidad
-- WebRTC le muestra al amigo la IP pública del Mac. Es inevitable si el video va directo y se acepta. En producción se quitan del SDP los candidatos con IP privada.
+- WebRTC le muestra al amigo la IP pública del Mac. Es inevitable si el video va directo y se acepta.
+- **Pendiente para la etapa 2:** hoy la oferta SDP incluye también las IP locales del Mac (hacen falta para jugar dentro de la red de la casa). Antes de abrir el UDP a internet hay que publicar solo la IP pública y rechazar candidatos privados en la respuesta del navegador.
 - Solo se guardan nombre, email y el historial de sesiones con métricas de red.

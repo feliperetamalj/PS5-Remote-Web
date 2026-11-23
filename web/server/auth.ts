@@ -43,7 +43,9 @@ export const dropUserSessions = (db: Db, user_id: number) => db.prepare('DELETE 
 export function rateLimiter(max: number, windowMs: number) {
   const hits = new Map<string, { n: number; reset: number }>()
   return (key: string, now: number) => {
-    if (hits.size > 10_000) hits.clear()
+    // Se expulsan solo las entradas vencidas: llenar el mapa con claves inventadas no borra el contador de nadie.
+    if (hits.size > 10_000) for (const [k, v] of hits) if (now > v.reset) hits.delete(k)
+    if (hits.size > 50_000) return false
     const h = hits.get(key)
     if (!h || now > h.reset) { hits.set(key, { n: 1, reset: now + windowMs }); return true }
     return ++h.n <= max

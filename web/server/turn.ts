@@ -153,9 +153,9 @@ export function currentTurn(db: Db, now: number): Turn | null {
 }
 
 /** El jugador entra: fija el inicio del turno (para la fila, desde aquí corren los 60 min). */
-export function startTurn(db: Db, turn: Turn, now: number): Turn {
+export function startTurn(db: Db, turn: Turn, now: number): Turn | null {
   db.prepare('UPDATE bookings SET started_at = COALESCE(started_at, ?) WHERE id = ?').run(now, turn.booking_id)
-  return currentTurn(db, now)!
+  return currentTurn(db, now)
 }
 
 export function extendTurn(db: Db, booking_id: number, minutes: number) {

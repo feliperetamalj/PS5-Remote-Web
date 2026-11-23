@@ -103,7 +103,7 @@ test('fila en vivo: oferta de 5 min, pasa el siguiente, y termina al llegar una 
   assert.equal(offer.user_id, b)
   // Caro tiene la hora siguiente confirmada: el turno de Beto termina ahí y no a los 60 min.
   turns.decide(db, turns.requestSlot(db, c, T0 + HOUR, T0), 'confirmed')
-  const active = turns.startTurn(db, offer, t1)
+  const active = turns.startTurn(db, offer, t1)!
   assert.deepEqual([active.state, active.ends_at], ['active', T0 + HOUR])
   turns.tick(db, T0 + HOUR)
   assert.equal(turns.currentTurn(db, T0 + HOUR)!.user_id, c)

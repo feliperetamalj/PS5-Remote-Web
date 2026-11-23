@@ -8,7 +8,7 @@ import { createApp } from './app.ts'
 
 const config = loadConfig()
 const db = openDb(join(config.data_dir, 'app.db'))
-const { app, sweep } = createApp({ db, origin: config.public_origin, media: mediaClient(config.media_socket) })
+const { app, sweep, recover } = createApp({ db, origin: config.public_origin, media: mediaClient(config.media_socket) })
 
 // En producción el mismo proceso sirve el frontend compilado; en desarrollo lo sirve Vite.
 const dist = join(import.meta.dirname, '../dist')
@@ -18,6 +18,7 @@ if (existsSync(dist)) {
   app.get('*', (c) => c.html(index))
 }
 
+await recover()
 setInterval(() => sweep().catch(console.error), 5000)
 
 // Solo localhost: hacia afuera publica playit.gg, nunca este puerto.

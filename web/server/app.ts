@@ -29,6 +29,8 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
   const globalLimit = auth.rateLimiter(200, 15 * 60_000)
   const signupLimit = auth.rateLimiter(20, 3_600_000)
   let live: Live | null = null
+  let stopPending = false // un stop que falló se reintenta en cada barrido
+  let offerLock: Promise<unknown> = Promise.resolve() // una sola conexión armándose a la vez
 
   const q = <T>(sql: string, ...a: (string | number | null)[]) => db.prepare(sql).all(...a) as T[]
   const str = (v: unknown, min: number, max: number, what: string) => {
@@ -50,14 +52,29 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
     if (!live) return
     db.prepare('UPDATE play_sessions SET ended_at = ?, end_reason = ? WHERE id = ?').run(now(), reason, live.session_id)
     live = null
-    await media({ op: 'stop' }).catch(() => {}) // media también corta solo por expires_at
+    stopPending = true
+    await stopMedia()
+  }
+
+  // media también corta sola por expires_at; esto cubre cortes anticipados (admin, bloqueo, reinicio de web).
+  async function stopMedia() {
+    if (!stopPending) return
+    try { await media({ op: 'stop' }); stopPending = false } catch { /* se reintenta en el próximo barrido */ }
+  }
+
+  /** Al arrancar: nadie puede seguir jugando con un turno que este proceso ya no vigila. */
+  async function recover() {
+    db.prepare("UPDATE play_sessions SET ended_at = ?, end_reason = 'restart' WHERE ended_at IS NULL").run(now())
+    stopPending = true
+    await stopMedia()
   }
 
   /** Mantenimiento periódico: avanza la fila y corta el stream si el turno ya no es de quien juega. */
   async function sweep() {
     turns.tick(db, now())
     const t = turns.currentTurn(db, now())
-    if (live && t?.booking_id !== live.booking_id) await closeLive('expired')
+    if (live && (t?.booking_id !== live.booking_id || t.user_id !== live.user_id)) await closeLive('expired')
+    else await stopMedia()
     return t
   }
 
@@ -135,7 +152,7 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
     const b = await json(c)
     const email = str(b.email, 1, 254, 'Correo').trim().toLowerCase()
     const password = str(b.password, 1, 200, 'Contraseña')
-    if (!loginLimit(email, now()) || !globalLimit('login', now())) throw new HttpError(429, 'Demasiados intentos. Espera 15 minutos.')
+    if (!globalLimit('login', now()) || !loginLimit(email, now())) throw new HttpError(429, 'Demasiados intentos. Espera 15 minutos.')
     const row = db.prepare('SELECT id, pass_hash, status FROM users WHERE email = ?').get(email) as { id: number; pass_hash: string; status: string } | undefined
     const ok = await auth.verifyPassword(password, row?.pass_hash ?? DUMMY_HASH)
     if (!row || !ok) throw new HttpError(401, 'Correo o contraseña incorrectos')
@@ -214,20 +231,29 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
   })
 
   // ── Jugar ──────────────────────────────────────────────────────────────────
-  api.post('/play/offer', async (c) => {
+  api.post('/play/offer', (c) => {
+    // En serie: dos ofertas a la vez dejarían una sesión huérfana y dos conexiones peleando por la consola.
+    const run = offerLock.then(() => offer(c), () => offer(c))
+    offerLock = run.catch(() => {})
+    return run
+  })
+
+  async function offer(c: Context<Env>) {
     // Señalización en dos pasos: el servidor de streaming ofrece (él define los códecs) y el navegador responde.
     const user = needApproved(c)
     let t = await sweep()
     if (!t || t.user_id !== user.id) throw new HttpError(403, 'No es tu turno')
     await closeLive('reconnect') // una sola conexión: la nueva reemplaza a la anterior
     t = turns.startTurn(db, t, now())
+    // El stop anterior es asíncrono: el turno pudo vencer o cambiar de dueño mientras tanto.
+    if (!t || t.user_id !== user.id) throw new HttpError(403, 'No es tu turno')
     let offer: Record<string, unknown>
     try { offer = await media({ op: 'start', expires_at: t.ends_at }) }
     catch (e) { throw new HttpError(503, (e as Error).message) }
     const session_id = Number(db.prepare('INSERT INTO play_sessions(booking_id, user_id, started_at) VALUES(?, ?, ?)').run(t.booking_id, user.id, now()).lastInsertRowid)
     live = { session_id, user_id: user.id, booking_id: t.booking_id }
     return c.json({ sdp: String(offer.sdp), ends_at: t.ends_at })
-  })
+  }
 
   api.post('/play/answer', async (c) => {
     const user = needUser(c)
@@ -292,8 +318,8 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
     if (status !== 'approved' && status !== 'blocked' && status !== 'pending') throw new HttpError(400, 'Estado inválido')
     if (target === admin.id) throw new HttpError(400, 'No puedes cambiar tu propia cuenta')
     if (!db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, target).changes) throw new HttpError(404, 'Usuario no encontrado')
-    if (status === 'blocked') {
-      auth.dropUserSessions(db, target)
+    if (status !== 'approved') { // bloquear o devolver a pendiente: pierde reservas y turno en curso
+      if (status === 'blocked') auth.dropUserSessions(db, target)
       db.prepare("UPDATE bookings SET status = 'cancelled' WHERE user_id = ? AND status IN ('requested','confirmed')").run(target)
       await sweep()
     }
@@ -337,5 +363,5 @@ export function createApp(opts: { db: Db; origin: string; media: Media; now?: ()
 
   api.all('*', () => { throw new HttpError(404, 'No existe') })
   app.route('/api', api)
-  return { app, sweep }
+  return { app, sweep, recover }
 }

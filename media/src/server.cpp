@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <csignal>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -52,6 +53,8 @@ static uint16_t udp_port;
 static ChiakiSession session;
 static std::shared_mutex session_mu; // compartido: usar la sesión · exclusivo: crearla o destruirla
 static bool session_alive = false;
+static std::recursive_mutex lifecycle_mu; // serializa abrir y cerrar la sesión (hilo de control y vigilante)
+static std::atomic<uint32_t> forced_buttons{0}; // botón PS de emergencia del admin: se suma a lo que mande el jugador
 static std::atomic<bool> ps5_connected{false}, ps5_quit{false};
 static std::string ps5_quit_reason;
 
@@ -73,8 +76,11 @@ static std::shared_ptr<Peer> current_peer() {
 
 static void set_controller(const ChiakiControllerState &st) {
 	std::shared_lock<std::shared_mutex> l(session_mu);
-	if(session_alive)
-		chiaki_session_set_controller_state(&session, const_cast<ChiakiControllerState *>(&st));
+	if(!session_alive)
+		return;
+	ChiakiControllerState out = st;
+	out.buttons |= forced_buttons.load();
+	chiaki_session_set_controller_state(&session, &out);
 }
 static void release_controller() {
 	ChiakiControllerState st;
@@ -88,7 +94,7 @@ static void request_idr() {
 		return;
 	last_idr_ms = t;
 	std::shared_lock<std::shared_mutex> l(session_mu);
-	if(session_alive)
+	if(session_alive && ps5_connected) // si la consola ya cortó, su conexión está destruida
 		chiaki_session_request_idr(&session);
 }
 
@@ -156,6 +162,7 @@ static void on_event(ChiakiEvent *e, void *) {
 
 // ── sesión con la PS5 ────────────────────────────────────────────────────────
 static void session_close() {
+	std::lock_guard<std::recursive_mutex> life(lifecycle_mu);
 	{
 		std::unique_lock<std::shared_mutex> l(session_mu);
 		if(!session_alive)
@@ -169,6 +176,7 @@ static void session_close() {
 }
 
 static std::string session_open() {
+	std::lock_guard<std::recursive_mutex> life(lifecycle_mu);
 	if(ps5_quit)
 		session_close(); // la consola cortó: se limpia y se vuelve a conectar
 	{
@@ -215,13 +223,13 @@ static void peer_close() {
 		std::lock_guard<std::mutex> l(peer_mu);
 		old.swap(peer);
 	}
-	release_controller();
 	if(old)
 		old->pc->close();
+	release_controller(); // después de cerrar: un paquete en vuelo del peer viejo ya no puede dejar nada apretado
 }
 
 static void on_pad(const std::shared_ptr<Peer> &p, const rtc::binary &m) {
-	if(m.size() != 16) // formato fijo: cualquier otra cosa se descarta
+	if(m.size() != 16 || current_peer() != p) // formato fijo, y solo del peer vigente
 		return;
 	auto b = reinterpret_cast<const uint8_t *>(m.data());
 	auto u16 = [&](int i) { return uint16_t(b[i] | (b[i + 1] << 8)); };
@@ -252,7 +260,17 @@ static json op_start(const json &req) {
 	if(!err.empty())
 		return {{"error", err}};
 	peer_close();
-	expires_at = req.value("expires_at", int64_t(0));
+	int64_t until = req.value("expires_at", int64_t(0));
+	if(until <= now_ms()) { // sin vencimiento válido no se transmite: el corte propio de media no es opcional
+		session_close();
+		return {{"error", "Turno sin vencimiento válido"}};
+	}
+	expires_at = until;
+	auto fail = [](const char *msg) { // no dejar la consola tomada si la conexión no llegó a armarse
+		expires_at = 0;
+		session_close();
+		return json{{"error", msg}};
+	};
 
 	rtc::Configuration config;
 	config.portRangeBegin = config.portRangeEnd = udp_port; // un solo puerto UDP para abrir en el router
@@ -305,10 +323,10 @@ static json op_start(const json &req) {
 
 	p->pc->setLocalDescription();
 	if(gathered->get_future().wait_for(5s) != std::future_status::ready)
-		return {{"error", "No se pudieron reunir los candidatos de red"}};
+		return fail("No se pudieron reunir los candidatos de red");
 	auto local = p->pc->localDescription();
 	if(!local)
-		return {{"error", "Sin descripción local"}};
+		return fail("Sin descripción local");
 	{
 		std::lock_guard<std::mutex> l(peer_mu);
 		peer = p;
@@ -337,7 +355,10 @@ static json handle(const json &req) {
 		return {{"ok", true}};
 	}
 	if(op == "extend") {
-		expires_at = req.value("expires_at", int64_t(0));
+		int64_t until = req.value("expires_at", int64_t(0));
+		if(until <= now_ms() || !current_peer())
+			return {{"error", "Nada que extender"}};
+		expires_at = until;
 		return {{"ok", true}};
 	}
 	if(op == "status") {
@@ -352,12 +373,14 @@ static json handle(const json &req) {
 		return {{"ok", true}};
 	}
 	if(op == "button" && req.value("button", "") == "PS") { // solo lo manda el admin, desde el panel
-		ChiakiControllerState st;
-		chiaki_controller_state_set_idle(&st);
-		st.buttons = CHIAKI_CONTROLLER_BUTTON_PS;
-		set_controller(st);
-		std::this_thread::sleep_for(100ms);
-		release_controller();
+		// Se suma a lo que mande el jugador durante 150 ms; si nadie juega, se manda solo.
+		forced_buttons = CHIAKI_CONTROLLER_BUTTON_PS;
+		if(!current_peer())
+			release_controller();
+		std::this_thread::sleep_for(150ms);
+		forced_buttons = 0;
+		if(!current_peer())
+			release_controller();
 		return {{"ok", true}};
 	}
 	return {{"error", "Operación desconocida"}};
@@ -378,8 +401,7 @@ static void watchdog() {
 				release_controller();
 		}
 		int64_t exp = expires_at.load();
-		if(exp && now_ms() >= exp) {
-			expires_at = 0;
+		if(exp && now_ms() >= exp && expires_at.compare_exchange_strong(exp, 0)) { // no pisa un turno recién iniciado
 			peer_close();
 			session_close();
 		}
@@ -401,6 +423,7 @@ extern "C" int serve_main(const char *keys_path, const char *socket_path, int po
 		return 1;
 	}
 	udp_port = uint16_t(port);
+	signal(SIGPIPE, SIG_IGN); // si web/ cuelga antes de leer la respuesta, write() falla en vez de matar el proceso
 	chiaki_log_init(&ps5_log, CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING, chiaki_log_cb_print, nullptr);
 	if(chiaki_lib_init() != CHIAKI_ERR_SUCCESS)
 		return 1;
@@ -427,6 +450,8 @@ extern "C" int serve_main(const char *keys_path, const char *socket_path, int po
 		int c = accept(srv, nullptr, nullptr);
 		if(c < 0)
 			continue;
+		timeval tv = {2, 0}; // un cliente que no termina su línea no puede congelar el control
+		setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 		std::string line;
 		char buf[4096];
 		ssize_t n;
